@@ -10,6 +10,8 @@
 #define mf_h
 
 #import <MangoFix/MFContext.h>
+#import <MangoFix/MFDeclarationModifier.h>
 #import <MangoFix/MFValue.h>
+#import <MangoFix/MFRSA.h>
 
 #endif /* mf_h */

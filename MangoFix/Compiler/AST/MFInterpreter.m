@@ -62,33 +62,16 @@ static MFScopeChain *st_commonScope;
 }
 
 
-- (void)compileSoruceWithURL:(NSURL *)url{
-	NSError *error;
-	NSString *source = [NSString stringWithContentsOfURL:url encoding:NSUTF8StringEncoding error:&error];
-	if (error) {
-		NSLog(@"%@",error);
-		return;
-	}
-	[self compileSoruceWithString:source];
-	
-}
-
 - (void)compileSoruceWithString:(NSString *)source{
 	extern void mf_set_source_string(char const *source);
 	mf_set_source_string([source UTF8String]);
 	extern void yyrestart  (FILE * input_file );
 	extern int yyparse(void);
 	if (yyparse()) {
-		NSLog(@"error! error! error!");
         yyrestart(NULL); /* 解析出错时，重置yylex */
 		return;
 	}
 	
 }
-
-
-
-
-
 
 @end

@@ -14,7 +14,6 @@ class ViewController:UIViewController {
 //变量定义
     NSString *text = @"1";
     self.resultView.text = text;
-
 }
 
 - (void)ifStatementExample{
@@ -154,7 +153,7 @@ class ViewController:UIViewController {
 //条件注释示例
 #If($systemVersion.doubleValue() > 12.0 )
 - (void)conditionsAnnotationExample{
-self.resultView.text = @"here is Mango method";
+    self.resultView.text = @"here is Mango method";
 }
 
 
@@ -170,32 +169,120 @@ self.resultView.text = @"here is Mango method";
 }
 
 
+
+- (void)staticVarAndGetVarAddressOperExample{
+    static int i = 0;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        i++;
+    });
+    self.resultView.text = @""+i;
 }
 
+    - (void)cfuntionVarExample{
+    int NSDocumentDirectory = 9;
+    int NSUserDomainMask = 1;
+
+    int  O_WRONLY = 0x0001;
+    uint S_IRWXU  = 0000700;
+
+
+    CFunction<id, int, int, BOOL> NSSearchPathForDirectoriesInDomains = CFunction("NSSearchPathForDirectoriesInDomains");
+    CFunction<int, char *, int, int> open = CFunction("open");
+    CFunction<size_t, int, void *, size_t> write = CFunction("write");
+    CFunction<int, int> close = CFunction("close");
+
+
+    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).lastObject;
+
+    NSString *path = doc.stringByAppendingPathComponent:(@"MangoFxi.html");
+    NSFileManager *fileManager = NSFileManager.defaultManager();
+    if (!fileManager.fileExistsAtPath:(path)) {
+        BOOL ret = fileManager.createFileAtPath:contents:attributes:(path, nil, nil);
+        if (!ret) {
+            self.resultView.text = @"创建文件失败";
+            return;
+        }
+    }
+    int fd = open(path.UTF8String,O_WRONLY, S_IRWXU);
+    if (fd < 0) {
+        self.resultView.text = @"打开文件失败";
+        return;
+    }
+    NSURL *url = NSURL.URLWithString:(@"https://github.com/YPLiang19/Mango");
+    NSData *data = NSData.dataWithContentsOfURL:(url);
+    write(fd, data.bytes, data.length);
+    close(fd);
+    self.resultView.text = @"文件写入成功:" + path;
+}
+
+- (void)typedefExaple{
+    self.resultView.text = @"typedef long alias_long;";
+}
+
+}
+
+int a = 1;
 
 class SuperMyController:UIViewController{
-
+/*
 - (void)viewDidLoad {
     super.viewDidLoad();
     self.view.backgroundColor = UIColor.blueColor();
+    self.testMasonry();
+}
+*/
+
+- (void)testMasonry{
+    UIView *superview = self.view;
+    UIView *view1 = UIView.alloc().init();
+    view1.translatesAutoresizingMaskIntoConstraints = NO;
+    view1.backgroundColor = UIColor.greenColor();
+    superview.addSubview:(view1);
+    struct UIEdgeInsets padding = UIEdgeInsetsMake(10, 10, 10, 10);
+    view1.mas_makeConstraints:(^(MASConstraintMaker *make) {
+        make.top.equalTo()(superview.mas_top).with.offset()(padding.top); //with is an optional semantic filler
+        make.left.equalTo()(superview.mas_left).with.offset()(padding.left);
+        make.bottom.equalTo()(superview.mas_bottom).with.offset()(-padding.bottom);
+        make.right.equalTo()(superview.mas_right).with.offset()(-padding.right);
+    });
 }
 
 }
 
 
 class SubMyController:SuperMyController {
+
 @property (strong, nonatomic) UIView *rotateView;
+
 - (void)viewDidLoad {
-        super.viewDidLoad();
-		self.title = @"Magno 创建自定义ViewController";
-		double width = 100;
-		double height = 100;
-		double x = self.view.frame.size.width/2 - width/2;
-		double y = self.view.frame.size.height/2 - height/2;
-		UIView *view = CustomView.alloc().initWithFrame:(CGRectMake(x, y, width, height));
-		self.view.addSubview:(view);
-		view.backgroundColor = UIColor.redColor();
-		self.rotateView = view;
+    super.viewDidLoad();
+    self.title = @"Magno 创建自定义ViewController";
+    double width = 100;
+    double height = 100;
+    double x = self.view.frame.size.width/2 - width/2;
+    double y = self.view.frame.size.height/2 - height/2;
+    UIView *view = CustomView.alloc().initWithFrame:(CGRectMake(x, y, width, height));
+    self.view.addSubview:(view);
+    view.backgroundColor = UIColor.redColor();
+    self.rotateView = view;
+
+    __weak id weakSelf = self;
+    self.block = ^{
+        __strong ids strongSelf = weakSelf;
+        NSLog(strongSelf.class());
+    };
+
+    UIButton *btn = UIButton.alloc().initWithFrame:(CGRectMake(100, 300, 200, 50));
+    btn.setBackgroundColor:(UIColor.redColor());
+    btn.setTitle:forState:(@"test btn click", UIControlStateNormal);
+    btn.addTarget:action:forControlEvents:(self, @selector(btnDidClicked:), UIControlEventTouchUpInside);
+    self.view.addSubview:(btn);
+
+}
+
+- (void)btnDidClicked:(id)btn{
+    NSLog(btn);
 }
 
 }

@@ -7,17 +7,12 @@
 //
 
 #import "create.h"
+#import "MFStructDeclareTable.h"
 
 #define STRING_ALLOC_SIZE (256)
 static char *st_string_literal_buffer = NULL;
 static int st_string_literal_buffer_size = 0;
 static int st_string_literal_buffer_alloc_size = 0;
-
-
-int yyerror(char const *str){
-	printf("line:%zd: %s\n",mf_get_current_compile_util().currentLineNumber,str);
-	return 0;
-}
 
 
 MFInterpreter *mf_get_current_compile_util(){
@@ -80,7 +75,6 @@ Class mf_expression_class_of_kind(MFExpressionKind kind){
 		case MF_BOOLEAN_EXPRESSION:
 		case MF_INT_EXPRESSION:
 		case MF_U_INT_EXPRESSION:
-		case MF_FLOAT_EXPRESSION:
 		case MF_DOUBLE_EXPRESSION:
 		case MF_STRING_EXPRESSION:
 		case MF_SELF_EXPRESSION:
@@ -114,6 +108,7 @@ Class mf_expression_class_of_kind(MFExpressionKind kind){
 		case MF_INCREMENT_EXPRESSION:
 		case MF_DECREMENT_EXPRESSION:
 		case NSC_NEGATIVE_EXPRESSION:
+        case MF_GET_ADDRESS_EXPRESSION:
 		case MF_AT_EXPRESSION:
 			return [MFUnaryExpression class];
 		case MF_SUB_SCRIPT_EXPRESSION:
@@ -128,6 +123,8 @@ Class mf_expression_class_of_kind(MFExpressionKind kind){
 			return [MFStructpression class];
 		case MF_ARRAY_LITERAL_EXPRESSION:
 			return [MFArrayExpression class];
+        case MF_C_FUNCTION_EXPRESSION:
+            return [MFCFuntionExpression class];
 		default:
 			return [MFExpression class];
 	}
@@ -153,6 +150,7 @@ MFDicEntry *mf_create_dic_entry(MFExpression *keyExpr, MFExpression *valueExpr){
 MFExpression *mf_create_expression(MFExpressionKind kind){
 	Class clazz = mf_expression_class_of_kind(kind);
 	MFExpression *expr = [[clazz alloc] init];
+    expr.lineNumber = mf_get_current_compile_util().currentLineNumber;
 	expr.expressionKind = kind;
     if (mf_get_current_compile_util().currentClassDefinition) {
         expr.currentClassName = mf_get_current_compile_util().currentClassDefinition.name;
@@ -163,6 +161,7 @@ MFExpression *mf_create_expression(MFExpressionKind kind){
 
 void mf_build_block_expr(MFBlockExpression *expr, MFTypeSpecifier *returnTypeSpecifier, NSArray<MFParameter *> *params, MFBlockBody *block){
 	MFFunctionDefinition *func = [[MFFunctionDefinition alloc] init];
+    func.lineNumber = mf_get_current_compile_util().currentLineNumber;
 	func.kind = MFFunctionDefinitionKindBlock;
 	if (!returnTypeSpecifier) {
 		returnTypeSpecifier = mf_create_type_specifier(MF_TYPE_VOID);
@@ -174,8 +173,10 @@ void mf_build_block_expr(MFBlockExpression *expr, MFTypeSpecifier *returnTypeSpe
 }
 
 
-MFDeclaration *mf_create_declaration(MFTypeSpecifier *type, NSString *name, MFExpression *initializer){
+MFDeclaration *mf_create_declaration(MFDeclarationModifier modifier_list, MFTypeSpecifier *type, NSString *name, MFExpression *initializer){
 	MFDeclaration *declaration = [[MFDeclaration alloc] init];
+    declaration.lineNumber =  mf_get_current_compile_util().currentLineNumber;
+    declaration.modifier = modifier_list;
 	declaration.type = type;
 	declaration.name = name;
 	declaration.initializer = initializer;
@@ -253,13 +254,13 @@ MFForEachStatement *mf_create_for_each_statement(MFTypeSpecifier *typeSpecifier,
 	MFForEachStatement *statement = [[MFForEachStatement alloc] init];
 	statement.kind = MFStatementKindForEach;
 	if (typeSpecifier) {
-		statement.declaration = mf_create_declaration(typeSpecifier, varName, nil);
+		statement.declaration = mf_create_declaration(MFDeclarationModifierNone,typeSpecifier, varName, nil);
 	}else{
 		MFIdentifierExpression *varExpr = (MFIdentifierExpression *)mf_create_expression(MF_IDENTIFIER_EXPRESSION);
 		varExpr.identifier = varName;
 		statement.identifierExpr = varExpr;
 	}
-	statement.arrayExpr = arrayExpr;
+	statement.collectionExpr = arrayExpr;
 	statement.block = block;
 	return statement;
 }
@@ -312,7 +313,6 @@ MFBlockBody *mf_open_block_statement(){
 	block.outBlock = interpreter.currentBlock;
 	interpreter.currentBlock = block;
 	return block;
-	
 }
 
 
@@ -327,23 +327,98 @@ MFBlockBody *mf_close_block_statement(MFBlockBody *block, NSArray<MFStatement *>
 
 MFStructDeclare *mf_create_struct_declare(MFExpression *annotaionIfConditionExpr, NSString *structName, NSString *typeEncodingKey, MFExpression *typeEncodingValueExpr, NSString *keysKey, NSArray<NSString *> *keysValue){
 	if (![typeEncodingKey isEqualToString:@"typeEncoding"]) {
-		mf_compile_err(0, MFCompileErrorStructDeclareLackTypeEncoding);
+        mf_throw_error(mf_get_current_compile_util().currentLineNumber, MFSemanticErrorStructDeclareLackFieldEncoding, @"struct: %@ declare lack field typeEncoding",structName);
+        return nil;
 	}
 	if (![keysKey isEqualToString:@"keys"]) {
-		mf_compile_err(0, MFCompileErrorStructDeclareLackTypeKeys);
+        mf_throw_error(mf_get_current_compile_util().currentLineNumber, MFSemanticErrorStructDeclareLackFieldKeys, @"struct: %@ declare lack field Keys",structName);
+        return nil;
 	}
     const char *typeEncodingValue = typeEncodingValueExpr.cstringValue;
 	MFStructDeclare *structDeclare = [[MFStructDeclare alloc] init];
 	structDeclare.annotationIfConditionExpr = annotaionIfConditionExpr;
-	structDeclare.lineNumber = 0;
 	structDeclare.name = structName;
 	structDeclare.typeEncoding = typeEncodingValue;
 	structDeclare.keys = keysValue;
 	return structDeclare;
 }
 
+MFTypeSpecifier *mf_create_cfuntion_type_specifier( NSArray<NSString *> *typeList){
+    MFTypeSpecifier *typeSpecifier = [[MFTypeSpecifier alloc] init];
+    typeSpecifier.typeKind = MF_TYPE_C_FUNCTION;
+    static NSDictionary *dic;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dic = @{@"void"         : @"v",
+                @"BOOL"         : @"B",
+                @"int"          : @"i",
+                @"long"         : @"l",
+                @"int8_t"       : @"c",
+                @"int16_t"      : @"s",
+                @"int32_t"      : @"i",
+                @"int64_t"      : @"q",
+                @"u_int"        : @"I",
+                @"u_long"       : @"L",
+                @"u_int8_t"     : @"C",
+                @"u_int16_t"    : @"S",
+                @"u_int32_t"    : @"I",
+                @"u_int64_t"    : @"Q",
+#if defined(__LP64__) && __LP64__
+                @"size_t"       : @"Q",
+#else
+                @"size_t"       : @"I",
+#endif
+#if defined(__LP64__) && __LP64__
+                @"CGFloat"      : @"d",
+#else
+                @"CGFloat"     : @"f",
+#endif
+                @"float"        : @"f",
+                @"double"       : @"d",
+                @"char *"       : @"*",
+                @"void *"       : @"^v",
+                @"id"           : @"@",
+                @"SEL"          : @":",
+                @"Class"        : @"#",
+                };
+    });
+    NSMutableArray *typeListEncode  = [NSMutableArray arrayWithCapacity:typeList.count];
+    int j = 0;
+    for (int i = 0; i < typeList.count; i++) {
+        NSString *typeName = typeList[i];
+        if (i != 0 && [typeName isEqualToString:@"void"]) {
+            continue;
+        }
+        NSString *typeEncode = nil;
+        if ([typeName hasPrefix:@"struct "]) {
+            MFStructDeclareTable *structDeclareTable = [MFStructDeclareTable shareInstance];
+            NSString *structName = [typeName substringFromIndex:7];
+            MFStructDeclare *structDeclare = [structDeclareTable getStructDeclareWithName:structName];
+            if (!structDeclare) {
+                mf_throw_error(mf_get_current_compile_util().currentLineNumber, MFSemanticErrorStructNoDeclare, @"struct: %@ no declare", structName);
+                return nil;
+            }
+            typeEncode = @(structDeclare.typeEncoding);
+        }else{
+            typeEncode = dic[typeName];
+            if (!typeEncode) {
+                mf_throw_error(mf_get_current_compile_util().currentLineNumber, MFSemanticErrorNotSupportCFunctionTypeDeclare, @"not support CFunction type: %@",typeName);
+                return nil;
+            }
+        }
+        typeListEncode[j] = typeEncode;
+        j++;
+    }
+    NSString *returnTypeEncode = typeListEncode[0];
+    NSArray *paramListTypeEncode = [typeListEncode subarrayWithRange:NSMakeRange(1, typeListEncode.count - 1)];
+    typeSpecifier.returnTypeEncode = returnTypeEncode;
+    typeSpecifier.paramListTypeEncode = paramListTypeEncode;
+    
+    return typeSpecifier;
+}
 
-MFTypeSpecifier *mf_create_type_specifier(ANATypeSpecifierKind kind){
+
+MFTypeSpecifier *mf_create_type_specifier(MFTypeSpecifierKind kind){
 	MFTypeSpecifier *typeSpecifier = [[MFTypeSpecifier alloc] init];
 	typeSpecifier.typeKind = kind;
 	return typeSpecifier;
@@ -493,8 +568,19 @@ void mf_add_statement(MFStatement *statement){
 	[interpreter.topList addObject:statement];
 }
 
+void mf_add_typedef(MFTypeSpecifierKind type, NSString *alias){
+    MFTypedefTable *typedefTable = [MFTypedefTable shareInstance];
+    [typedefTable typedefType:type identifer:alias];
+}
 
-
+void mf_add_typedef_from_alias(NSString *alias_existing, NSString *alias_new){
+    MFTypedefTable *typedefTable = [MFTypedefTable shareInstance];
+    MFTypeSpecifierKind type = [typedefTable typeWtihIdentifer:alias_existing];
+    if (type == MF_TYPE_UNKNOWN) {
+        mf_throw_error(mf_get_current_compile_util().currentLineNumber, MFSemanticErrorTypedefWithUnknownExistingType, @"typedef error, unknown type: %@", alias_existing);
+    }
+    mf_add_typedef(type, alias_new);
+}
 
 
 

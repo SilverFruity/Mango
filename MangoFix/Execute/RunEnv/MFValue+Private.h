@@ -11,11 +11,14 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @interface MFValue (Private)
+
 @property (strong, nonatomic)MFTypeSpecifier *type;
-- (void)assignFrom:(MFValue *)src;
-- (void)assign2CValuePointer:(void *)cvaluePointer typeEncoding:(const char *)typeEncoding;
+
 - (instancetype)initWithCValuePointer:(void *)cValuePointer typeEncoding:(const char *)typeEncoding bridgeTransfer:(BOOL)bridgeTransfer;
 
+- (void)assignFrom:(MFValue *)src;
+- (void)assignToCValuePointer:(void *)cvaluePointer typeEncoding:(const char *)typeEncoding;
+-(nullable void *)valuePointer;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -7,22 +7,397 @@
 //
 
 #import <Foundation/Foundation.h>
-#import "mf_ast.h"
 #import <objc/message.h>
+#import <symdl/symdl.h>
+#import "mf_ast.h"
 #import "ffi.h"
 #import "util.h"
 #import "mf_ast.h"
 #import "execute.h"
 #import "create.h"
 #import "MFValue+Private.h"
+#import "MFVarDeclareChain.h"
 
 static void eval_expression(MFInterpreter *inter, MFScopeChain *scope, __kindof MFExpression *expr);
+
+static MFValue *invoke_values(id instance, SEL sel, NSArray<MFValue *> *argValues){
+    if (!instance) {
+        return [MFValue valueInstanceWithInt:0];
+    }
+    NSMethodSignature *sig = [instance methodSignatureForSelector:sel];
+    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:sig];
+    invocation.target = instance;
+    invocation.selector = sel;
+    NSUInteger argCount = [sig numberOfArguments];
+    for (NSUInteger i = 2; i < argCount; i++) {
+        const char *typeEncoding = [sig getArgumentTypeAtIndex:i];
+        void *ptr = malloc(mf_size_with_encoding(typeEncoding));
+        [argValues[i-2] assignToCValuePointer:ptr typeEncoding:typeEncoding];
+        [invocation setArgument:ptr atIndex:i];
+        free(ptr);
+    }
+    [invocation invoke];
+    
+    char *returnType = (char *)[sig methodReturnType];
+    returnType = removeTypeEncodingPrefix(returnType);
+    MFValue *retValue;
+    if (*returnType != 'v') {
+        void *retValuePointer = malloc([sig methodReturnLength]);
+        [invocation getReturnValue:retValuePointer];
+        NSString *selectorName = NSStringFromSelector(sel);
+        if ([selectorName isEqualToString:@"alloc"] || [selectorName isEqualToString:@"new"] ||
+            [selectorName isEqualToString:@"copy"] || [selectorName isEqualToString:@"mutableCopy"]) {
+            retValue = [[MFValue alloc] initWithCValuePointer:retValuePointer typeEncoding:returnType bridgeTransfer:YES];
+        }else{
+            retValue = [[MFValue alloc] initWithCValuePointer:retValuePointer typeEncoding:returnType bridgeTransfer:NO];
+        }
+        
+        free(retValuePointer);
+    }else{
+        retValue = [MFValue voidValueInstance];
+    }
+    return retValue;
+}
+
+
+
+static MFValue *invoke(NSUInteger line, MFInterpreter *inter, MFScopeChain *scope, id instance, SEL sel, NSArray<MFExpression *> *argExprs){
+    if (!instance) {
+        for (MFExpression *argExpr in argExprs) {
+            eval_expression(inter, scope, argExpr);
+            [inter.stack pop];
+        }
+        return [MFValue valueInstanceWithInt:0];
+    }
+    
+    NSMutableArray<MFValue *> *values = [NSMutableArray arrayWithCapacity:argExprs.count];
+    for (MFExpression *expr in argExprs) {
+        eval_expression(inter, scope, expr);
+        MFValue *argValue = [inter.stack pop];
+        [values addObject:argValue];
+    }
+    return invoke_values(instance, sel, values);
+}
+
+
+static MFValue *invoke_sueper_values(id instance, Class superClass, SEL sel, NSArray<MFValue *> *argValues){
+    struct objc_super *superPtr = &(struct objc_super){instance,superClass};
+    NSMethodSignature *sig = [instance methodSignatureForSelector:sel];
+    NSUInteger argCount = sig.numberOfArguments;
+    
+    void **args = alloca(sizeof(void *) * argCount);
+    ffi_type **argTypes = alloca(sizeof(ffi_type *) * argCount);
+    
+    argTypes[0] = &ffi_type_pointer;
+    args[0] = &superPtr;
+    
+    argTypes[1] = &ffi_type_pointer;
+    args[1] = &sel;
+    
+    for (NSUInteger i = 2; i < argCount; i++) {
+        MFValue *argValue = argValues[i-2];
+        char *argTypeEncoding = (char *)[sig getArgumentTypeAtIndex:i];
+        argTypeEncoding = removeTypeEncodingPrefix(argTypeEncoding);
+        
+        
+#define mf_SET_FFI_TYPE_AND_ARG_CASE(_code, _type, _ffi_type_value, _sel)\
+case _code:{\
+argTypes[i] = &_ffi_type_value;\
+_type value = (_type)argValue._sel;\
+args[i] = &value;\
+break;\
+}
+        
+        switch (*argTypeEncoding) {
+                mf_SET_FFI_TYPE_AND_ARG_CASE('c', char, ffi_type_schar, c2integerValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('i', int, ffi_type_sint, c2integerValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('s', short, ffi_type_sshort, c2integerValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('l', long, ffi_type_slong, c2integerValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('q', long long, ffi_type_sint64, c2integerValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('C', unsigned char, ffi_type_uchar, c2uintValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('I', unsigned int, ffi_type_uint, c2uintValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('S', unsigned short, ffi_type_ushort, c2uintValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('L', unsigned long, ffi_type_ulong, c2uintValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('Q', unsigned long long, ffi_type_uint64, c2uintValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('B', BOOL, ffi_type_sint8, c2uintValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('f', float, ffi_type_float, c2doubleValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('d', double, ffi_type_double, c2doubleValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('@', id, ffi_type_pointer, c2objectValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('#', Class, ffi_type_pointer, c2objectValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE(':', SEL, ffi_type_pointer, selValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('*', char *, ffi_type_pointer, c2pointerValue)
+                mf_SET_FFI_TYPE_AND_ARG_CASE('^', id, ffi_type_pointer, c2pointerValue)
+                
+            case '{':{
+                argTypes[i] = mf_ffi_type_with_type_encoding(argTypeEncoding);
+                if (argValue.type.typeKind == MF_TYPE_STRUCT_LITERAL) {
+                    size_t structSize = mf_size_with_encoding(argTypeEncoding);
+                    void * structPtr = alloca(structSize);
+                    MFStructDeclareTable *table = [MFStructDeclareTable shareInstance];
+                    NSString *structName = mf_struct_name_with_encoding(argTypeEncoding);
+                    MFStructDeclare *declare = [table getStructDeclareWithName:structName];
+                    mf_struct_data_with_dic(structPtr, argValue.objectValue, declare);
+                    args[i] = structPtr;
+                }else if (argValue.type.typeKind == MF_TYPE_STRUCT){
+                    args[i] = argValue.pointerValue;
+                }else{
+                    NSCAssert(0, @"");
+                }
+                break;
+            }
+                
+                
+            default:
+                NSCAssert(0, @"not support type  %s", argTypeEncoding);
+                break;
+        }
+        
+    }
+    
+    char *returnTypeEncoding = (char *)[sig methodReturnType];
+    returnTypeEncoding = removeTypeEncodingPrefix(returnTypeEncoding);
+    ffi_type *rtype = NULL;
+    void *rvalue = NULL;
+#define mf_FFI_RETURN_TYPE_CASE(_code, _ffi_type)\
+case _code:{\
+rtype = &_ffi_type;\
+rvalue = alloca(rtype->size);\
+break;\
+}
+    
+    switch (*returnTypeEncoding) {
+            mf_FFI_RETURN_TYPE_CASE('c', ffi_type_schar)
+            mf_FFI_RETURN_TYPE_CASE('i', ffi_type_sint)
+            mf_FFI_RETURN_TYPE_CASE('s', ffi_type_sshort)
+            mf_FFI_RETURN_TYPE_CASE('l', ffi_type_slong)
+            mf_FFI_RETURN_TYPE_CASE('q', ffi_type_sint64)
+            mf_FFI_RETURN_TYPE_CASE('C', ffi_type_uchar)
+            mf_FFI_RETURN_TYPE_CASE('I', ffi_type_uint)
+            mf_FFI_RETURN_TYPE_CASE('S', ffi_type_ushort)
+            mf_FFI_RETURN_TYPE_CASE('L', ffi_type_ulong)
+            mf_FFI_RETURN_TYPE_CASE('Q', ffi_type_uint64)
+            mf_FFI_RETURN_TYPE_CASE('B', ffi_type_sint8)
+            mf_FFI_RETURN_TYPE_CASE('f', ffi_type_float)
+            mf_FFI_RETURN_TYPE_CASE('d', ffi_type_double)
+            mf_FFI_RETURN_TYPE_CASE('@', ffi_type_pointer)
+            mf_FFI_RETURN_TYPE_CASE('#', ffi_type_pointer)
+            mf_FFI_RETURN_TYPE_CASE(':', ffi_type_pointer)
+            mf_FFI_RETURN_TYPE_CASE('^', ffi_type_pointer)
+            mf_FFI_RETURN_TYPE_CASE('*', ffi_type_pointer)
+            mf_FFI_RETURN_TYPE_CASE('v', ffi_type_void)
+        case '{':{
+            rtype = mf_ffi_type_with_type_encoding(returnTypeEncoding);
+            rvalue = alloca(rtype->size);
+        }
+            
+        default:
+            NSCAssert(0, @"not support type  %s", returnTypeEncoding);
+            break;
+    }
+    
+    
+    ffi_cif cif;
+    ffi_prep_cif(&cif, FFI_DEFAULT_ABI, (unsigned int)argCount, rtype, argTypes);
+    ffi_call(&cif, objc_msgSendSuper, rvalue, args);
+    MFValue *retValue;
+    if (*returnTypeEncoding != 'v') {
+        retValue = [[MFValue alloc] initWithCValuePointer:rvalue typeEncoding:returnTypeEncoding bridgeTransfer:NO];
+    }else{
+        retValue = [MFValue voidValueInstance];
+    }
+    return retValue;
+}
+
+static MFValue *invoke_super(NSUInteger line, MFInterpreter *inter, MFScopeChain *scope, id instance,Class superClass, SEL sel, NSArray<MFExpression *> *argExprs){
+    if (!instance) {
+        for (MFExpression *argExpr in argExprs) {
+            eval_expression(inter, scope, argExpr);
+            [inter.stack pop];
+        }
+        return [MFValue valueInstanceWithInt:0];
+    }
+    NSMutableArray<MFValue *> *values = [NSMutableArray arrayWithCapacity:argExprs.count];
+    for (MFExpression *expr in argExprs) {
+        eval_expression(inter, scope, expr);
+        MFValue *argValue = [inter.stack pop];
+        [values addObject:argValue];
+    }
+    return invoke_sueper_values(instance,superClass, sel, values);
+}
+
+
+
+
+
+
+
+static MFValue *get_struct_field_value(void *structData,MFStructDeclare *declare,NSString *key){
+    NSString *typeEncoding = [NSString stringWithUTF8String:declare.typeEncoding];
+    NSString *types = [typeEncoding substringToIndex:typeEncoding.length-1];
+    NSUInteger location = [types rangeOfString:@"="].location + 1;
+    types = [types substringFromIndex:location];
+    const char *encoding = types.UTF8String;
+    size_t postion = 0;
+    NSUInteger index = [declare.keys indexOfObject:key];
+    if (index == NSNotFound) {
+        NSCAssert(0, @"key %@ not found of struct %@", key, declare.name);
+    }
+    MFValue *retValue = [[MFValue alloc] init];
+    NSUInteger i = 0;
+    for (size_t j = 0; j < declare.keys.count; j++) {
+#define mf_GET_STRUCT_FIELD_VALUE_CASE(_code,_type,_kind,_sel)\
+case _code:{\
+if (j == index) {\
+_type value = *(_type *)(structData + postion);\
+retValue.type = mf_create_type_specifier(_kind);\
+retValue._sel = value;\
+return retValue;\
+}\
+postion += sizeof(_type);\
+break;\
+}
+        switch (encoding[i]) {
+                mf_GET_STRUCT_FIELD_VALUE_CASE('c',char,MF_TYPE_INT,integerValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('i',int,MF_TYPE_INT,integerValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('s',short,MF_TYPE_INT,integerValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('l',long,MF_TYPE_INT,integerValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('q',long long,MF_TYPE_INT,integerValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('C',unsigned char,MF_TYPE_U_INT,uintValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('I',unsigned int,MF_TYPE_U_INT,uintValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('S',unsigned short,MF_TYPE_U_INT,uintValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('L',unsigned long,MF_TYPE_U_INT,uintValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('Q',unsigned long long,MF_TYPE_U_INT,uintValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('f',float,MF_TYPE_DOUBLE,doubleValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('d',double,MF_TYPE_DOUBLE,doubleValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('B',BOOL,MF_TYPE_U_INT,uintValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('^',void *,MF_TYPE_POINTER,pointerValue);
+                mf_GET_STRUCT_FIELD_VALUE_CASE('*',char *,MF_TYPE_C_STRING,cstringValue);
+                
+                
+            case '{':{
+                size_t stackSize = 1;
+                size_t end = i + 1;
+                for (char c = encoding[end]; c ; end++, c = encoding[end]) {
+                    if (c == '{') {
+                        stackSize++;
+                    }else if (c == '}') {
+                        stackSize--;
+                        if (stackSize == 0) {
+                            break;
+                        }
+                    }
+                }
+                
+                NSString *subTypeEncoding = [types substringWithRange:NSMakeRange(i, end - i + 1)];
+                size_t size = mf_size_with_encoding(subTypeEncoding.UTF8String);
+                if(j == index){
+                    void *value = structData + postion;
+                    MFValue *retValue = [MFValue valueInstanceWithStruct:value typeEncoding:subTypeEncoding.UTF8String copyData:NO];
+                    return retValue;
+                }
+                
+                
+                postion += size;
+                i = end;
+                break;
+            }
+            default:
+                break;
+        }
+        i++;
+    }
+    NSCAssert(0, @"struct %@ typeEncoding error %@", declare.name, typeEncoding);
+    return nil;
+}
+
+
+static void set_struct_field_value(void *structData,MFStructDeclare *declare,NSString *key, MFValue *value){
+    NSString *typeEncoding = [NSString stringWithUTF8String:declare.typeEncoding];
+    NSString *types = [typeEncoding substringToIndex:typeEncoding.length-1];
+    NSUInteger location = [types rangeOfString:@"="].location+1;
+    types = [types substringFromIndex:location];
+    const char *encoding = types.UTF8String;
+    size_t postion = 0;
+    NSUInteger index = [declare.keys indexOfObject:key];
+    if (index == NSNotFound) {
+        NSCAssert(0, @"key %@ not found of struct %@", key, declare.name);
+    }
+    NSUInteger i = 0;
+    for (size_t j = 0; j < declare.keys.count; j++) {
+#define mf_SET_STRUCT_FIELD_VALUE_CASE(_code,_type,_sel)\
+case _code:{\
+if (j == index) {\
+*(_type *)(structData + postion) = (_type)value._sel;\
+return ;\
+}\
+postion += sizeof(_type);\
+break;\
+}
+        switch (encoding[i]) {
+                mf_SET_STRUCT_FIELD_VALUE_CASE('c',char,c2integerValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('i',int,c2integerValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('s',short,c2integerValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('l',long,c2integerValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('q',long long,c2integerValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('C',unsigned char,c2uintValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('I',unsigned int,c2uintValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('S',unsigned short,c2uintValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('L',unsigned long,c2uintValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('Q',unsigned long long,c2uintValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('f',float,c2doubleValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('d',double,c2doubleValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('B',BOOL,c2integerValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('^',void *,c2pointerValue);
+                mf_SET_STRUCT_FIELD_VALUE_CASE('*',char *,cstringValue);
+                
+                
+            case '{':{
+                size_t stackSize = 1;
+                size_t end = i + 1;
+                for (char c = encoding[end]; c ; end++, c = encoding[end]) {
+                    if (c == '{') {
+                        stackSize++;
+                    }else if (c == '}') {
+                        stackSize--;
+                        if (stackSize == 0) {
+                            break;
+                        }
+                    }
+                }
+                
+                NSString *subTypeEncoding = [types substringWithRange:NSMakeRange(i, end - i + 1)];
+                size_t size = mf_size_with_encoding(subTypeEncoding.UTF8String);
+                if(j == index){
+                    void *valuePtr = structData + postion;
+                    [value assignToCValuePointer:valuePtr typeEncoding:subTypeEncoding.UTF8String];
+                    return;
+                }
+                postion += size;
+                i = end;
+                break;
+            }
+            default:
+                break;
+        }
+        i++;
+    }
+}
+
+
+
 
 static void eval_bool_exprseeion(MFInterpreter *inter, MFExpression *expr){
 	MFValue *value = [MFValue new];
 	value.type = mf_create_type_specifier(MF_TYPE_BOOL);
 	value.uintValue = expr.boolValue;
 	[inter.stack push:value];
+}
+
+static void eval_u_interger_expression(MFInterpreter *inter, MFExpression *expr){
+    MFValue *value = [MFValue new];
+    value.type = mf_create_type_specifier(MF_TYPE_U_INT);
+    value.uintValue = expr.uintValue;
+    [inter.stack push:value];
 }
 
 static void eval_interger_expression(MFInterpreter *inter, MFExpression *expr){
@@ -54,6 +429,255 @@ static void eval_sel_expression(MFInterpreter *inter, MFExpression *expr){
 }
 
 
+static void copy_undef_var(id exprOrStatement, MFVarDeclareChain *chain, MFScopeChain *fromScope, MFScopeChain *endScope,MFScopeChain *destScope){
+    if (!exprOrStatement) {
+        return;
+    }
+    Class exprOrStatementClass = [exprOrStatement class];
+    if (exprOrStatementClass == MFExpression.class) {
+        MFExpression *expr = (MFExpression *)exprOrStatement;
+        if (expr.expressionKind == MF_SELF_EXPRESSION || expr.expressionKind == MF_SUPER_EXPRESSION) {
+            NSString *identifier = @"self";
+            if (![chain isInChain:identifier]) {
+                MFValue *value = [fromScope getValueWithIdentifier:identifier endScope:endScope];
+                if (value) {
+                    [destScope setValue:value withIndentifier:identifier];
+                }
+            }
+            return;
+        }
+    }else if (exprOrStatementClass == MFIdentifierExpression.class) {
+        MFIdentifierExpression *expr = (MFIdentifierExpression *)exprOrStatement;
+        NSString *identifier = expr.identifier;
+        if (![chain isInChain:identifier]) {
+           MFValue *value = [fromScope getValueWithIdentifier:identifier endScope:endScope];
+            if (value) {
+                [destScope setValue:value withIndentifier:identifier];
+            }
+        }
+        return;
+        
+    }else if (exprOrStatementClass == MFAssignExpression.class) {
+        MFAssignExpression *expr = (MFAssignExpression *)exprOrStatement;
+        copy_undef_var(expr.left, chain, fromScope, endScope, destScope);
+        copy_undef_var(expr.right, chain, fromScope, endScope, destScope);
+        return;
+        
+    }else if (exprOrStatementClass == MFBinaryExpression.class){
+        MFBinaryExpression *expr = (MFBinaryExpression *)exprOrStatement;
+        copy_undef_var(expr.left, chain, fromScope, endScope, destScope);
+        copy_undef_var(expr.right, chain, fromScope, endScope, destScope);
+        return;
+        
+    }else if (exprOrStatementClass == MFTernaryExpression.class){
+        MFTernaryExpression *expr = (MFTernaryExpression *)exprOrStatement;
+        copy_undef_var(expr.condition, chain, fromScope, endScope, destScope);
+        copy_undef_var(expr.trueExpr, chain, fromScope, endScope, destScope);
+        copy_undef_var(expr.falseExpr, chain, fromScope, endScope, destScope);
+        return;
+        
+    }else if (exprOrStatementClass == MFUnaryExpression.class){
+        MFUnaryExpression *expr = (MFUnaryExpression *)exprOrStatement;
+        copy_undef_var(expr.expr, chain, fromScope, endScope, destScope);
+        return;
+        
+    }else if (exprOrStatementClass == MFMemberExpression.class){
+        MFMemberExpression *expr = (MFMemberExpression *)exprOrStatement;
+        copy_undef_var(expr.expr, chain, fromScope, endScope, destScope);
+        return;
+        
+    }else if (exprOrStatementClass == MFFunctonCallExpression.class){
+        MFFunctonCallExpression *expr = (MFFunctonCallExpression *)exprOrStatement;
+        copy_undef_var(expr.expr, chain, fromScope, endScope, destScope);
+        for (MFExpression *argExpr in expr.args) {
+            copy_undef_var(argExpr, chain, fromScope, endScope, destScope);
+        }
+        return;
+        
+    }else if (exprOrStatementClass == MFSubScriptExpression.class){
+        MFSubScriptExpression *expr = (MFSubScriptExpression *)exprOrStatement;
+        copy_undef_var(expr.aboveExpr, chain, fromScope, endScope, destScope);
+        copy_undef_var(expr.bottomExpr, chain, fromScope, endScope, destScope);
+        return;
+        
+    }else if (exprOrStatementClass == MFStructEntry.class){
+        MFStructEntry *expr = (MFStructEntry *)exprOrStatement;
+        copy_undef_var(expr.valueExpr, chain, fromScope, endScope, destScope);
+        return;
+        
+    }else if (exprOrStatementClass == MFStructpression.class){
+        MFStructpression *expr = (MFStructpression *)exprOrStatement;
+        for (MFExpression *entryExpr in expr.entriesExpr) {
+            copy_undef_var(entryExpr, chain, fromScope, endScope, destScope);
+        }
+        return;
+        
+    }else if (exprOrStatementClass == MFDicEntry.class){
+        MFDicEntry *expr = (MFDicEntry *)exprOrStatement;
+        copy_undef_var(expr.keyExpr, chain, fromScope, endScope, destScope);
+        copy_undef_var(expr.valueExpr, chain, fromScope, endScope, destScope);
+        return;
+        
+    }else if (exprOrStatementClass == MFDictionaryExpression.class){
+        MFDictionaryExpression *expr = (MFDictionaryExpression *)exprOrStatement;
+        for (MFExpression *entryExpr in expr.entriesExpr) {
+            copy_undef_var(entryExpr, chain, fromScope, endScope, destScope);
+        }
+        return;
+        
+    }else if (exprOrStatementClass == MFArrayExpression.class){
+        MFArrayExpression *expr = (MFArrayExpression *)exprOrStatement;
+        for (MFExpression *itemExpression in expr.itemExpressions) {
+            copy_undef_var(itemExpression, chain, fromScope, endScope, destScope);
+        }
+        return;
+        
+    }else if (exprOrStatementClass == MFBlockExpression.class){
+        MFBlockExpression *expr = (MFBlockExpression *)exprOrStatement;
+        MFFunctionDefinition *funcDef = expr.func;
+        MFVarDeclareChain *funcChain = [MFVarDeclareChain varDeclareChainWithNext:chain];
+        NSArray *params = funcDef.params;
+        for (MFParameter *param in params) {
+            NSString *name = param.name;
+            [funcChain addIndentifer:name];
+        }
+        MFBlockBody *funcDefBody = funcDef.block;
+        for (MFStatement *statement in funcDefBody.statementList) {
+            copy_undef_var(statement, funcChain, fromScope, endScope, destScope);
+        }
+        return;
+        
+    }else if (exprOrStatementClass == MFExpressionStatement.class){
+        MFExpressionStatement *statement = (MFExpressionStatement *)exprOrStatement;
+        copy_undef_var(statement.expr, chain, fromScope, endScope, destScope);
+        return;
+        
+    }else if (exprOrStatementClass == MFDeclarationStatement.class){
+        MFDeclarationStatement *statement = (MFDeclarationStatement *)exprOrStatement;
+        NSString *name = statement.declaration.name;
+        [chain addIndentifer:name];
+        
+        MFExpression *initializerExpr = statement.declaration.initializer;
+        if (initializerExpr) {
+            copy_undef_var(initializerExpr, chain, fromScope, endScope, destScope);
+        }
+        return;
+        
+    }else if (exprOrStatementClass == MFIfStatement.class){
+        MFIfStatement *ifStatement = (MFIfStatement *)exprOrStatement;
+        copy_undef_var(ifStatement.condition, chain, fromScope, endScope, destScope);
+        
+        MFVarDeclareChain *thenChain = [MFVarDeclareChain varDeclareChainWithNext:chain];
+        for (MFStatement *statement in ifStatement.thenBlock.statementList) {
+            copy_undef_var(statement, thenChain, fromScope, endScope, destScope);
+        }
+        MFVarDeclareChain *elseChain = [MFVarDeclareChain varDeclareChainWithNext:chain];
+        for (MFStatement *statement in ifStatement.elseBlocl.statementList) {
+            copy_undef_var(statement, elseChain, fromScope, endScope, destScope);
+        }
+        
+        for (MFElseIf *elseIf in ifStatement.elseIfList) {
+            copy_undef_var(elseIf, chain, fromScope, endScope, destScope);
+        }
+        return;
+    }else if (exprOrStatementClass == MFElseIf.class){
+        MFElseIf *elseIfStatement = (MFElseIf *)exprOrStatement;
+        copy_undef_var(elseIfStatement.condition, chain, fromScope, endScope, destScope);
+        MFVarDeclareChain *elseIfChain = [MFVarDeclareChain varDeclareChainWithNext:chain];
+        for (MFStatement *statement in elseIfStatement.thenBlock.statementList) {
+            copy_undef_var(statement, elseIfChain, fromScope, endScope, destScope);
+        }
+        return;
+        
+    }else if (exprOrStatementClass == MFSwitchStatement.class){
+        MFSwitchStatement *swithcStatement = (MFSwitchStatement *)exprOrStatement;
+        copy_undef_var(swithcStatement.expr, chain, fromScope, endScope, destScope);
+        
+        for (MFCase *case_ in swithcStatement.caseList) {
+            copy_undef_var(case_, chain, fromScope, endScope, destScope);
+        }
+        
+        MFVarDeclareChain *defChain = [MFVarDeclareChain varDeclareChainWithNext:chain];
+        for (MFStatement *satement in swithcStatement.defaultBlock.statementList) {
+            copy_undef_var(satement, defChain, fromScope, endScope, destScope);
+        }
+        return;
+        
+    }else if (exprOrStatementClass == MFCase.class){
+        MFCase *caseStatement = (MFCase *)exprOrStatement;
+        copy_undef_var(caseStatement.expr, chain, fromScope, endScope, destScope);
+        MFVarDeclareChain *caseChain = [MFVarDeclareChain varDeclareChainWithNext:chain];
+        for (MFStatement *satement in caseStatement.block.statementList) {
+            copy_undef_var(satement, caseChain, fromScope, endScope, destScope);
+        }
+        return;
+        
+    }else if (exprOrStatementClass == MFForStatement.class){
+        MFForStatement *forStatement = (MFForStatement *)exprOrStatement;
+        copy_undef_var(forStatement.initializerExpr, chain, fromScope, endScope, destScope);
+        
+        MFDeclaration *declaration = forStatement.declaration;
+        MFVarDeclareChain *forChain = [MFVarDeclareChain varDeclareChainWithNext:chain];
+        if (declaration) {
+            NSString *name = declaration.name;
+            [forChain addIndentifer:name];
+        }
+        copy_undef_var(forStatement.condition, forChain, fromScope, endScope, destScope);
+        
+        for (MFStatement *statement in forStatement.block.statementList) {
+            copy_undef_var(statement, forChain, fromScope, endScope, destScope);
+        }
+        
+        copy_undef_var(forStatement.post, forChain, fromScope, endScope, destScope);
+        
+        
+    }else if (exprOrStatementClass == MFForEachStatement.class){
+        MFForEachStatement *forEachStatement = (MFForEachStatement *)exprOrStatement;
+        copy_undef_var(forEachStatement.identifierExpr, chain, fromScope, endScope, destScope);
+        
+        copy_undef_var(forEachStatement.collectionExpr, chain, fromScope, endScope, destScope);
+        
+        MFVarDeclareChain *forEachChain = [MFVarDeclareChain varDeclareChainWithNext:chain];
+        MFDeclaration *declaration = forEachStatement.declaration;
+        if (declaration) {
+            NSString *name = declaration.name;
+            [forEachChain addIndentifer:name];
+        }
+        for (MFStatement *statement in forEachStatement.block.statementList) {
+            copy_undef_var(statement, forEachChain, fromScope, endScope, destScope);
+        }
+        
+        
+    }else if (exprOrStatementClass == MFWhileStatement.class){
+        MFWhileStatement *whileStatement = (MFWhileStatement *)exprOrStatement;
+        copy_undef_var(whileStatement.condition, chain, fromScope, endScope, destScope);
+        
+        MFVarDeclareChain *whileChain = [MFVarDeclareChain varDeclareChainWithNext:chain];
+        for (MFStatement *statement in whileStatement.block.statementList) {
+            copy_undef_var(statement, whileChain, fromScope, endScope, destScope);
+        }
+        
+    }else if (exprOrStatementClass == MFDoWhileStatement.class){
+        MFWhileStatement *doWhileStatement = (MFWhileStatement *)exprOrStatement;
+        copy_undef_var(doWhileStatement.condition, chain, fromScope, endScope, destScope);
+        
+        MFVarDeclareChain *doWhileChain = [MFVarDeclareChain varDeclareChainWithNext:chain];
+        for (MFStatement *statement in doWhileStatement.block.statementList) {
+            copy_undef_var(statement, doWhileChain, fromScope, endScope, destScope);
+        }
+        
+    }else if (exprOrStatementClass == MFReturnStatement.class){
+        MFReturnStatement *returnStatement = (MFReturnStatement *)exprOrStatement;
+        copy_undef_var(returnStatement.retValExpr, chain, fromScope, endScope, destScope);
+        return;
+    }else if (exprOrStatementClass == MFContinueStatement.class){
+        
+    }else if (exprOrStatementClass == MFBreakStatement.class){
+        
+    }
+    
+}
+
 
 
 static void eval_block_expression(MFInterpreter *inter, MFScopeChain *outScope, MFBlockExpression *expr){
@@ -62,8 +686,9 @@ static void eval_block_expression(MFInterpreter *inter, MFScopeChain *outScope, 
 	MFBlock *manBlock = [[MFBlock alloc] init];
 	manBlock.func = expr.func;
 	
-	MFScopeChain *scope = [MFScopeChain scopeChainWithNext:outScope];
-	manBlock.scope = scope;
+	MFScopeChain *scope = [MFScopeChain scopeChainWithNext:inter.topScope];
+    copy_undef_var(expr, [[MFVarDeclareChain alloc] init], outScope, inter.topScope, scope);
+	manBlock.outScope = scope;
 	
 	manBlock.inter = inter;
 	
@@ -80,18 +705,22 @@ static void eval_block_expression(MFInterpreter *inter, MFScopeChain *outScope, 
 	[inter.stack push:value];
 }
 
+
 static void eval_nil_expr(MFInterpreter *inter){
 	MFValue *value = [MFValue new];
 	value.type = mf_create_type_specifier(MF_TYPE_OBJECT);
 	value.objectValue = nil;
 	[inter.stack push:value];
 }
+
+
 static void eval_null_expr(MFInterpreter *inter){
 	MFValue *value = [MFValue new];
 	value.type = mf_create_type_specifier(MF_TYPE_POINTER);
 	value.pointerValue = NULL;
 	[inter.stack push:value];
 }
+
 
 static void eval_identifer_expression(MFInterpreter *inter, MFScopeChain *scope ,MFIdentifierExpression *expr){
 	NSString *identifier = expr.identifier;
@@ -121,7 +750,10 @@ static void eval_ternary_expression(MFInterpreter *inter, MFScopeChain *scope, M
 	}
 	
 }
+
+
 static void eval_function_call_expression(MFInterpreter *inter, MFScopeChain *scope, MFFunctonCallExpression *expr);
+static MFValue *invoke_values(id instance, SEL sel, NSArray<MFValue *> *values);
 
 
 static void eval_assign_expression(MFInterpreter *inter, MFScopeChain *scope, MFAssignExpression *expr){
@@ -130,26 +762,16 @@ static void eval_assign_expression(MFInterpreter *inter, MFScopeChain *scope, MF
 	MFExpression *rightExpr = expr.right;
 	
 	switch (leftExpr.expressionKind) {
+        case MF_IDENTIFIER_EXPRESSION:
 		case MF_MEMBER_EXPRESSION:{
-			MFMemberExpression *memberExpr = (MFMemberExpression *)leftExpr;
-			if (!memberExpr.c2methodName) {
-				NSString *first = [[memberExpr.memberName substringToIndex:1] uppercaseString];
-				NSString *other = memberExpr.memberName.length > 1 ? [memberExpr.memberName substringFromIndex:1] : nil;
-				memberExpr.memberName = [NSString stringWithFormat:@"set%@%@:",first,other];
-				memberExpr.c2methodName = YES;
-			}
-			MFFunctonCallExpression *callExpr = [[MFFunctonCallExpression alloc] init];
-			callExpr.expressionKind = MF_FUNCTION_CALL_EXPRESSION;
-			callExpr.expr = memberExpr;
-			
+			MFExpression *optrExpr;
 			if (assignKind == MF_NORMAL_ASSIGN) {
-				callExpr.args = @[rightExpr];
+				optrExpr = rightExpr;
 			}else{
-				MFBinaryExpression *binExpr = [[MFBinaryExpression alloc] init];
-				binExpr.left = leftExpr;
-				binExpr.right = rightExpr;
-				callExpr.args = @[binExpr];
-				
+                MFBinaryExpression *binExpr = [[MFBinaryExpression alloc] init];
+                binExpr.left = leftExpr;
+                binExpr.right = rightExpr;
+                optrExpr = binExpr;
 				switch (assignKind) {
 					case MF_ADD_ASSIGN:{
 						binExpr.expressionKind = MF_ADD_EXPRESSION;
@@ -171,70 +793,54 @@ static void eval_assign_expression(MFInterpreter *inter, MFScopeChain *scope, MF
 						binExpr.expressionKind = MF_MOD_EXPRESSION;
 						break;
 					}
-						
 					default:
 						break;
 				}
 				
-			}
-			eval_function_call_expression(inter, scope, callExpr);
+            }
+            
+            eval_expression(inter, scope, optrExpr);
+            MFValue *operValue = [inter.stack pop];
+            if (leftExpr.expressionKind == MF_IDENTIFIER_EXPRESSION) {
+                MFIdentifierExpression *identiferExpr = (MFIdentifierExpression *)leftExpr;
+                [scope assignWithIdentifer:identiferExpr.identifier value:operValue];
+            }else{
+                MFMemberExpression *memberExpr = (MFMemberExpression *)leftExpr;
+                eval_expression(inter, scope, memberExpr.expr);
+                MFValue *memberObjValue = [inter.stack pop];
+                if (memberObjValue.type.typeKind == MF_TYPE_STRUCT) {
+                    MFStructDeclareTable *table = [MFStructDeclareTable shareInstance];
+                    set_struct_field_value(memberObjValue.pointerValue, [table getStructDeclareWithName:memberObjValue.type.structName],  memberExpr.memberName, operValue);
+                }else{
+                    if (memberObjValue.type.typeKind != MF_TYPE_OBJECT && memberObjValue.type.typeKind != MF_TYPE_CLASS) {
+                        NSCAssert(0, @"line:%zd, %@ is not object",memberExpr.expr.lineNumber, memberObjValue.type.typeName);
+                    }
+                    //调用对象setter方法
+                    NSString *memberName = memberExpr.memberName;
+                    NSString *first = [[memberName substringToIndex:1] uppercaseString];
+                    NSString *other = memberName.length > 1 ? [memberName substringFromIndex:1] : nil;
+                    memberName = [NSString stringWithFormat:@"set%@%@:",first,other];
+                    if (memberExpr.expr.expressionKind == MF_SUPER_EXPRESSION) {
+                        Class currentClass = objc_getClass(memberExpr.expr.currentClassName.UTF8String);
+                        Class superClass = class_getSuperclass(currentClass);
+                        invoke_sueper_values([memberObjValue c2objectValue], superClass, NSSelectorFromString(memberName), @[operValue]);
+                    }else{
+                        invoke_values([memberObjValue c2objectValue], NSSelectorFromString(memberName), @[operValue]);
+                    }
+                }
+            }
+            [inter.stack push:operValue];
 			break;
 		}
-			
 		case MF_SELF_EXPRESSION:{
 			NSCAssert(assignKind == MF_NORMAL_ASSIGN, @"");
 			eval_expression(inter, scope, rightExpr);
 			MFValue *rightValue = [inter.stack pop];
 			[scope assignWithIdentifer:@"self" value:rightValue];
-			[inter.stack push:rightValue];
+            [inter.stack push:rightValue];
 			break;
 		}
 			
-		case MF_IDENTIFIER_EXPRESSION:{
-			MFIdentifierExpression *identiferExpr = (MFIdentifierExpression *)leftExpr;
-			MFExpression *optrExpr;
-			if (assignKind == MF_NORMAL_ASSIGN) {
-				optrExpr = rightExpr;
-			}else{
-				MFBinaryExpression *binExpr = [[MFBinaryExpression alloc] init];
-				binExpr.left = leftExpr;
-				binExpr.right = rightExpr;
-				optrExpr = binExpr;
-				
-				switch (assignKind) {
-					case MF_ADD_ASSIGN:{
-						binExpr.expressionKind = MF_ADD_EXPRESSION;
-						break;
-					}
-					case MF_SUB_ASSIGN:{
-						binExpr.expressionKind = MF_SUB_EXPRESSION;
-						break;
-					}
-					case MF_MUL_ASSIGN:{
-						binExpr.expressionKind = MF_MUL_EXPRESSION;
-						break;
-					}
-					case MF_DIV_ASSIGN:{
-						binExpr.expressionKind = MF_DIV_EXPRESSION;
-						break;
-					}
-					case MF_MOD_ASSIGN:{
-						binExpr.expressionKind = MF_MOD_EXPRESSION;
-						break;
-					}
-						
-					default:
-						break;
-				}
-				
-			}
-			
-			eval_expression(inter, scope, optrExpr);
-			MFValue *operValue = [inter.stack pop];
-			[scope assignWithIdentifer:identiferExpr.identifier value:operValue];
-			[inter.stack push:operValue];
-			break;
-		}
 		case MF_SUB_SCRIPT_EXPRESSION:{
 			MFSubScriptExpression *subScriptExpr = (MFSubScriptExpression *)leftExpr;
 			eval_expression(inter, scope, rightExpr);
@@ -260,11 +866,9 @@ static void eval_assign_expression(MFInterpreter *inter, MFScopeChain *scope, MF
 					NSCAssert(0, @"");
 					break;
 			}
-			
-			[inter.stack push:rightValue];
+            [inter.stack push:rightValue];
 			break;
 		}
-			
 		default:
 			NSCAssert(0, @"");
 			break;
@@ -792,7 +1396,7 @@ static void eval_negative_expression(MFInterpreter *inter, MFScopeChain *scope,M
 static void eval_sub_script_expression(MFInterpreter *inter, MFScopeChain *scope,MFSubScriptExpression *expr){
 	eval_expression(inter, scope, expr.bottomExpr);
 	MFValue *bottomValue = [inter.stack peekStack:0];
-	ANATypeSpecifierKind kind = bottomValue.type.typeKind;
+	MFTypeSpecifierKind kind = bottomValue.type.typeKind;
 	
 	eval_expression(inter, scope, expr.aboveExpr);
 	MFValue *arrValue = [inter.stack peekStack:0];
@@ -845,6 +1449,15 @@ static void eval_at_expression(MFInterpreter *inter, MFScopeChain *scope,MFUnary
 			break;
 	}
 	[inter.stack push:resultValue];
+}
+
+static void eval_get_address_expresion(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
+    eval_expression(inter, scope, expr.expr);
+    MFValue *value = [inter.stack pop];
+    MFValue *resultValue = [MFValue new];
+    resultValue.type = mf_create_type_specifier(MF_TYPE_POINTER);
+    resultValue.pointerValue = [value valuePointer];
+    [inter.stack push:resultValue];
 }
 
 
@@ -912,8 +1525,6 @@ static void eval_dic_expression(MFInterpreter *inter, MFScopeChain *scope, MFDic
 			NSCAssert(0, @"line:%zd key can not bee type:%@",entry.keyExpr.lineNumber, keyValue.type.typeName);
 		}
 		
-		
-		
 		eval_expression(inter, scope, entry.valueExpr);
 		MFValue *valueValue = [inter.stack peekStack:0];
 		if (!valueValue.isObject) {
@@ -929,7 +1540,6 @@ static void eval_dic_expression(MFInterpreter *inter, MFScopeChain *scope, MFDic
 	resultValue.type = mf_create_type_specifier(MF_TYPE_OBJECT);
 	resultValue.objectValue = dic.copy;
 	[inter.stack push:resultValue];
-	
 }
 
 
@@ -953,189 +1563,38 @@ static void eval_array_expression(MFInterpreter *inter, MFScopeChain *scope, MFA
 }
 
 
-
-
-
-
-static MFValue *get_struct_field_value(void *structData,MFStructDeclare *declare,NSString *key){
-	NSString *typeEncoding = [NSString stringWithUTF8String:declare.typeEncoding];
-	NSString *types = [typeEncoding substringToIndex:typeEncoding.length-1];
-	NSUInteger location = [types rangeOfString:@"="].location+1;
-	types = [types substringFromIndex:location];
-	const char *encoding = types.UTF8String;
-	size_t postion = 0;
-	NSUInteger index = [declare.keys indexOfObject:key];
-	if (index == NSNotFound) {
-		NSCAssert(0, @"key %@ not found of struct %@", key, declare.name);
-	}
-	MFValue *retValue = [[MFValue alloc] init];
-	NSUInteger i = 0;
-	for (size_t j = 0; j < declare.keys.count; j++) {
-#define mf_GET_STRUCT_FIELD_VALUE_CASE(_code,_type,_kind,_sel)\
-case _code:{\
-if (j == index) {\
-_type value = *(_type *)(structData + postion);\
-retValue.type = mf_create_type_specifier(_kind);\
-retValue._sel = value;\
-return retValue;\
-}\
-postion += sizeof(_type);\
-break;\
-}
-		switch (encoding[i]) {
-				mf_GET_STRUCT_FIELD_VALUE_CASE('c',char,MF_TYPE_INT,integerValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('i',int,MF_TYPE_INT,integerValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('s',short,MF_TYPE_INT,integerValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('l',long,MF_TYPE_INT,integerValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('q',long long,MF_TYPE_INT,integerValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('C',unsigned char,MF_TYPE_U_INT,uintValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('I',unsigned int,MF_TYPE_U_INT,uintValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('S',unsigned short,MF_TYPE_U_INT,uintValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('L',unsigned long,MF_TYPE_U_INT,uintValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('Q',unsigned long long,MF_TYPE_U_INT,uintValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('f',float,MF_TYPE_DOUBLE,doubleValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('d',double,MF_TYPE_DOUBLE,doubleValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('B',BOOL,MF_TYPE_U_INT,uintValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('^',void *,MF_TYPE_POINTER,pointerValue);
-				mf_GET_STRUCT_FIELD_VALUE_CASE('*',char *,MF_TYPE_C_STRING,cstringValue);
-			
-		
-			case '{':{
-				size_t stackSize = 1;
-				size_t end = i + 1;
-				for (char c = encoding[end]; c ; end++, c = encoding[end]) {
-					if (c == '{') {
-						stackSize++;
-					}else if (c == '}') {
-						stackSize--;
-						if (stackSize == 0) {
-							break;
-						}
-					}
-				}
-				
-				NSString *subTypeEncoding = [types substringWithRange:NSMakeRange(i, end - i + 1)];
-				size_t size = mf_struct_size_with_encoding(subTypeEncoding.UTF8String);
-				if(j == index){
-					void *value = structData + postion;
-					MFValue *retValue = [[MFValue alloc] init];
-					NSString *subStruct = mf_struct_name_with_encoding(subTypeEncoding.UTF8String);
-					retValue.type = mf_create_struct_type_specifier(subStruct);
-					retValue.pointerValue = malloc(size);
-					memcpy(retValue.pointerValue, value, size);
-					return retValue;
-				}
-				
-				
-				postion += size;
-				i = end;
-				break;
-			}
-			default:
-				break;
-		}
-		i++;
-	}
-	NSCAssert(0, @"struct %@ typeEncoding error %@", declare.name, typeEncoding);
-	return nil;
-}
-
 static void eval_self_super_expression(MFInterpreter *inter, MFScopeChain *scope){
 	MFValue *value = [scope getValueWithIdentifierInChain:@"self"];
 	NSCAssert(value, @"not found var %@", @"self");
 	[inter.stack push:value];
 }
 
+
 static void eval_member_expression(MFInterpreter *inter, MFScopeChain *scope, MFMemberExpression *expr){
+    if (expr.expr.expressionKind == MF_SUPER_EXPRESSION) {
+        MFFunctonCallExpression *funcExpr = [[MFFunctonCallExpression alloc] init];
+        funcExpr.expr = expr;
+        eval_function_call_expression(inter, scope, funcExpr);
+        return;
+    }
+    
 	eval_expression(inter, scope, expr.expr);
-	MFValue *obj = [inter.stack peekStack:0];
+	MFValue *obj = [inter.stack pop];
+    MFValue *resultValue;
 	if (obj.type.typeKind == MF_TYPE_STRUCT) {
 		MFStructDeclareTable *table = [MFStructDeclareTable shareInstance];
-		MFValue *value =  get_struct_field_value(obj.pointerValue, [table getStructDeclareWithName:obj.type.structName], expr.memberName);
-		[inter.stack pop];
-		[inter.stack push:value];
-		return;
-		
-	}
-	
-	if (obj.type.typeKind != MF_TYPE_OBJECT && obj.type.typeKind != MF_TYPE_CLASS) {
-		NSCAssert(0, @"line:%zd, %@ is not object",expr.expr.lineNumber, obj.type.typeName);
-	}
-	SEL sel = NSSelectorFromString(expr.memberName);
-	NSMethodSignature *sig =[obj.c2objectValue methodSignatureForSelector:NSSelectorFromString(expr.memberName)];
-	
-	char *returnTypeEncoding = (char *)[sig methodReturnType];
-	returnTypeEncoding = removeTypeEncodingPrefix(returnTypeEncoding);
-	NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:sig];
-	[invocation setTarget:obj.c2objectValue];
-	[invocation setSelector:sel];
-	[invocation invoke];
-	
-	MFValue *retValue;
-	if (*returnTypeEncoding != 'v') {
-		void *returnData = malloc([sig methodReturnLength]);
-		[invocation getReturnValue:returnData];
-		retValue = [[MFValue alloc] initWithCValuePointer:returnData typeEncoding:returnTypeEncoding bridgeTransfer:NO];
-		free(returnData);
-	}else{
-		retValue = [MFValue voidValueInstance];
-	}
-		
-	[inter.stack pop];
-	[inter.stack push:retValue];
-		
+		resultValue =  get_struct_field_value(obj.pointerValue, [table getStructDeclareWithName:obj.type.structName], expr.memberName);
+    }else{
+        if (obj.type.typeKind != MF_TYPE_OBJECT && obj.type.typeKind != MF_TYPE_CLASS) {
+            NSCAssert(0, @"line:%zd, %@ is not object",expr.expr.lineNumber, obj.type.typeName);
+        }
+        SEL sel = NSSelectorFromString(expr.memberName);
+        resultValue  = invoke_values(obj.c2objectValue, sel, nil);
+    }
+	[inter.stack push:resultValue];
 }
 
-
-
-
-static MFValue *invoke(NSUInteger line, MFInterpreter *inter, MFScopeChain *scope, id instance, SEL sel, NSArray<MFExpression *> *argExprs){
-	if (!instance) {
-		for (MFExpression *argExpr in argExprs) {
-			eval_expression(inter, scope, argExpr);
-			[inter.stack pop];
-		}
-		return [MFValue valueInstanceWithInt:0];
-	}
-	NSMethodSignature *sig = [instance methodSignatureForSelector:sel];
-	NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:sig];
-	invocation.target = instance;
-	invocation.selector = sel;
-	NSUInteger argCount = [sig numberOfArguments];
-	for (NSUInteger i = 2; i < argCount; i++) {
-		const char *typeEncoding = [sig getArgumentTypeAtIndex:i];
-		void *ptr = malloc(mf_size_with_encoding(typeEncoding));
-		eval_expression(inter, scope, argExprs[i - 2]);
-        __autoreleasing MFValue *argValue = [inter.stack pop];
-		[argValue assign2CValuePointer:ptr typeEncoding:typeEncoding];
-		[invocation setArgument:ptr atIndex:i];
-		free(ptr);
-	}
-	[invocation invoke];
-	
-	char *returnType = (char *)[sig methodReturnType];
-	returnType = removeTypeEncodingPrefix(returnType);
-	MFValue *retValue;
-	if (*returnType != 'v') {
-		void *retValuePointer = malloc([sig methodReturnLength]);
-		[invocation getReturnValue:retValuePointer];
-		NSString *selectorName = NSStringFromSelector(sel);
-		if ([selectorName isEqualToString:@"alloc"] || [selectorName isEqualToString:@"new"] ||
-			[selectorName isEqualToString:@"copy"] || [selectorName isEqualToString:@"mutableCopy"]) {
-			retValue = [[MFValue alloc] initWithCValuePointer:retValuePointer typeEncoding:returnType bridgeTransfer:YES];
-		}else{
-			retValue = [[MFValue alloc] initWithCValuePointer:retValuePointer typeEncoding:returnType bridgeTransfer:NO];
-		}
-		
-		free(retValuePointer);
-	}else{
-		retValue = [MFValue voidValueInstance];
-	}
-	
-	return retValue;
-}
-
-
+static MFValue * call_c_function(NSUInteger lineNumber, MFValue *callee, NSArray<MFValue *> *argValues);
 
 static void eval_function_call_expression(MFInterpreter *inter, MFScopeChain *scope, MFFunctonCallExpression *expr){
 	MFExpressionKind exprKind = expr.expr.expressionKind;
@@ -1155,133 +1614,8 @@ static void eval_function_call_expression(MFInterpreter *inter, MFScopeChain *sc
 					id _self = [[scope getValueWithIdentifierInChain:@"self"] objectValue];
                     Class currentClass = objc_getClass(memberObjExpr.currentClassName.UTF8String);
 					Class superClass = class_getSuperclass(currentClass);
-					struct objc_super *superPtr = &(struct objc_super){_self,superClass};
-					NSMethodSignature *sig = [_self methodSignatureForSelector:sel];
-					NSUInteger argCount = sig.numberOfArguments;
-					
-					void **args = alloca(sizeof(void *) * argCount);
-					ffi_type **argTypes = alloca(sizeof(ffi_type *) * argCount);
-					
-					argTypes[0] = &ffi_type_pointer;
-					args[0] = &superPtr;
-					
-					argTypes[1] = &ffi_type_pointer;
-					args[1] = &sel;
-				
-					for (NSUInteger i = 2; i < argCount; i++) {
-						MFExpression *argExpr = expr.args[i - 2];
-						eval_expression(inter, scope, argExpr);
-						MFValue *argValue = [inter.stack pop];
-						char *argTypeEncoding = (char *)[sig getArgumentTypeAtIndex:i];
-						argTypeEncoding = removeTypeEncodingPrefix(argTypeEncoding);
-						
-						
-#define mf_SET_FFI_TYPE_AND_ARG_CASE(_code, _type, _ffi_type_value, _sel)\
-case _code:{\
-argTypes[i] = &_ffi_type_value;\
-_type value = (_type)argValue._sel;\
-args[i] = &value;\
-break;\
-}
-						
-						switch (*argTypeEncoding) {
-							mf_SET_FFI_TYPE_AND_ARG_CASE('c', char, ffi_type_schar, c2integerValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('i', int, ffi_type_sint, c2integerValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('s', short, ffi_type_sshort, c2integerValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('l', long, ffi_type_slong, c2integerValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('q', long long, ffi_type_sint64, c2integerValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('C', unsigned char, ffi_type_uchar, c2uintValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('I', unsigned int, ffi_type_uint, c2uintValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('S', unsigned short, ffi_type_ushort, c2uintValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('L', unsigned long, ffi_type_ulong, c2uintValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('Q', unsigned long long, ffi_type_uint64, c2uintValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('B', BOOL, ffi_type_sint8, c2uintValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('f', float, ffi_type_float, c2doubleValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('d', double, ffi_type_double, c2doubleValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('@', id, ffi_type_pointer, c2objectValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('#', Class, ffi_type_pointer, c2objectValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE(':', SEL, ffi_type_pointer, selValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('*', char *, ffi_type_pointer, c2pointerValue)
-							mf_SET_FFI_TYPE_AND_ARG_CASE('^', id, ffi_type_pointer, c2pointerValue)
-
-							case '{':{
-								argTypes[i] = mf_ffi_type_with_type_encoding(argTypeEncoding);
-								if (argValue.type.typeKind == MF_TYPE_STRUCT_LITERAL) {
-									size_t structSize = mf_size_with_encoding(argTypeEncoding);
-									void * structPtr = alloca(structSize);
-									MFStructDeclareTable *table = [MFStructDeclareTable shareInstance];
-									NSString *structName = mf_struct_name_with_encoding(argTypeEncoding);
-									MFStructDeclare *declare = [table getStructDeclareWithName:structName];
-									mf_struct_data_with_dic(structPtr, argValue.objectValue, declare);
-									args[i] = structPtr;
-								}else if (argValue.type.typeKind == MF_TYPE_STRUCT){
-									args[i] = argValue.pointerValue;
-								}else{
-									NSCAssert(0, @"");
-								}
-								break;
-							}
-							
-							
-							default:
-								NSCAssert(0, @"not support type  %s", argTypeEncoding);
-								break;
-						}
-						
-					}
-					
-					char *returnTypeEncoding = (char *)[sig methodReturnType];
-					returnTypeEncoding = removeTypeEncodingPrefix(returnTypeEncoding);
-					ffi_type *rtype = NULL;
-					void *rvalue = NULL;
-#define mf_FFI_RETURN_TYPE_CASE(_code, _ffi_type)\
-case _code:{\
-rtype = &_ffi_type;\
-rvalue = alloca(rtype->size);\
-break;\
-}
-					
-					switch (*returnTypeEncoding) {
-						mf_FFI_RETURN_TYPE_CASE('c', ffi_type_schar)
-						mf_FFI_RETURN_TYPE_CASE('i', ffi_type_sint)
-						mf_FFI_RETURN_TYPE_CASE('s', ffi_type_sshort)
-						mf_FFI_RETURN_TYPE_CASE('l', ffi_type_slong)
-						mf_FFI_RETURN_TYPE_CASE('q', ffi_type_sint64)
-						mf_FFI_RETURN_TYPE_CASE('C', ffi_type_uchar)
-						mf_FFI_RETURN_TYPE_CASE('I', ffi_type_uint)
-						mf_FFI_RETURN_TYPE_CASE('S', ffi_type_ushort)
-						mf_FFI_RETURN_TYPE_CASE('L', ffi_type_ulong)
-						mf_FFI_RETURN_TYPE_CASE('Q', ffi_type_uint64)
-						mf_FFI_RETURN_TYPE_CASE('B', ffi_type_sint8)
-						mf_FFI_RETURN_TYPE_CASE('f', ffi_type_float)
-						mf_FFI_RETURN_TYPE_CASE('d', ffi_type_double)
-						mf_FFI_RETURN_TYPE_CASE('@', ffi_type_pointer)
-						mf_FFI_RETURN_TYPE_CASE('#', ffi_type_pointer)
-						mf_FFI_RETURN_TYPE_CASE(':', ffi_type_pointer)
-						mf_FFI_RETURN_TYPE_CASE('^', ffi_type_pointer)
-						mf_FFI_RETURN_TYPE_CASE('*', ffi_type_pointer)
-						mf_FFI_RETURN_TYPE_CASE('v', ffi_type_void)
-						case '{':{
-							rtype = mf_ffi_type_with_type_encoding(returnTypeEncoding);
-							rvalue = alloca(rtype->size);
-						}
-							
-						default:
-							NSCAssert(0, @"not support type  %s", returnTypeEncoding);
-							break;
-					}
-					
-		
-					ffi_cif cif;
-					ffi_prep_cif(&cif, FFI_DEFAULT_ABI, (unsigned int)argCount, rtype, argTypes);
-					ffi_call(&cif, objc_msgSendSuper, rvalue, args);
-					MFValue *retValue;
-					if (*returnTypeEncoding != 'v') {
-						 retValue = [[MFValue alloc] initWithCValuePointer:rvalue typeEncoding:returnTypeEncoding bridgeTransfer:NO];
-					}else{
-						retValue = [MFValue voidValueInstance];
-					}
-					[inter.stack push:retValue];
+                    MFValue *retValue = invoke_super(memberObjExpr.lineNumber, inter, scope, _self, superClass, sel, expr.args);
+                    [inter.stack push:retValue];
 					break;
 				}
 				default:{
@@ -1290,9 +1624,6 @@ break;\
 					MFValue *retValue = invoke(expr.lineNumber, inter, scope, [memberObj c2objectValue], sel, expr.args);
 					[inter.stack push:retValue];
 					break;
-					
-					
-					
 				}
 			}
 			
@@ -1302,53 +1633,152 @@ break;\
 		case MF_IDENTIFIER_EXPRESSION:
 		case MF_FUNCTION_CALL_EXPRESSION:{
 			eval_expression(inter, scope, expr.expr);
-			MFValue *blockValue = [inter.stack pop];
-			
-			
-			const char *blockTypeEncoding = [MFBlock typeEncodingForBlock:blockValue.c2objectValue];
-			NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:blockTypeEncoding];
-			NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:sig];
-			[invocation setTarget:blockValue.objectValue];
-			
-			NSUInteger numberOfArguments = [sig numberOfArguments];
-			if (numberOfArguments - 1 != expr.args.count) {
-				NSCAssert(0, @"");
-			}
-			for (NSUInteger i = 1; i < numberOfArguments; i++) {
-				const char *typeEncoding = [sig getArgumentTypeAtIndex:i];
-				void *ptr = alloca(mf_size_with_encoding(typeEncoding));
-				eval_expression(inter, scope, expr.args[i -1]);
-				__autoreleasing MFValue *argValue = [inter.stack pop];
-				[argValue assign2CValuePointer:ptr typeEncoding:typeEncoding];
-				[invocation setArgument:ptr atIndex:i];
-			}
-			[invocation invoke];
-			const char *retType = [sig methodReturnType];
-			retType = removeTypeEncodingPrefix((char *)retType);
-			MFValue *retValue;
-			if (*retType != 'v') {
-				void *retValuePtr = alloca(mf_size_with_encoding(retType));
-				[invocation getReturnValue:retValuePtr];
-				retValue = [[MFValue alloc] initWithCValuePointer:retValuePtr typeEncoding:retType bridgeTransfer:NO];
-			}else{
-				retValue = [MFValue voidValueInstance];
-			}
-			[inter.stack push:retValue];
+			MFValue *callee = [inter.stack pop];
+            
+            static Class blockClass = nil;
+            static dispatch_once_t onceToken;
+            dispatch_once(&onceToken, ^{
+                blockClass = [^{} class];
+                while (blockClass) {
+                    Class superClass = class_getSuperclass(blockClass);
+                    if (superClass == nil) {
+                        break;
+                    }
+                    blockClass = superClass;
+                }
+            });
+            
+            if (callee.type.typeKind != MF_TYPE_C_FUNCTION && !(callee.isObject && [callee.objectValue isKindOfClass:blockClass])) {
+                mf_throw_error(expr.expr.lineNumber, MFRuntimeErrorCallCanNotBeCalleeValue, @"type: %@ value can not be callee",callee.type.typeName);
+                return;
+            }
+            
+            if (callee.type.typeKind == MF_TYPE_C_FUNCTION) {
+                if (callee.pointerValue == NULL) {
+                    mf_throw_error(expr.expr.lineNumber, MFRuntimeErrorNullPointer, nil);
+                    return;
+                }
+                
+                NSUInteger paramListCount =  callee.type.paramListTypeEncode.count;
+                if (paramListCount != expr.args.count) {
+                    mf_throw_error(expr.lineNumber, MFRuntimeErrorParameterListCountNoMatch, @"expect count: %zd, pass in cout:%zd",paramListCount, expr.args.count);
+                    return;
+                }
+                
+                NSMutableArray *paramValues = [NSMutableArray arrayWithCapacity:paramListCount];
+                for (MFExpression *argExpr in expr.args) {
+                    eval_expression(inter, scope, argExpr);
+                    MFValue *value = [inter.stack pop];
+                    [paramValues addObject:value];
+                }
+                MFValue *retValue = call_c_function(expr.lineNumber,callee, paramValues.copy);
+                [inter.stack push:retValue];
+            }else{
+                const char *blockTypeEncoding = [MFBlock typeEncodingForBlock:callee.c2objectValue];
+                NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:blockTypeEncoding];
+                NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:sig];
+                [invocation setTarget:callee.objectValue];
+                
+                NSUInteger numberOfArguments = [sig numberOfArguments];
+                if (numberOfArguments - 1 != expr.args.count) {
+                    mf_throw_error(expr.lineNumber, MFRuntimeErrorParameterListCountNoMatch, @"expect count: %zd, pass in cout:%zd",numberOfArguments - 1,expr.args.count);
+                    return;
+                }
+                for (NSUInteger i = 1; i < numberOfArguments; i++) {
+                    const char *typeEncoding = [sig getArgumentTypeAtIndex:i];
+                    void *ptr = alloca(mf_size_with_encoding(typeEncoding));
+                    eval_expression(inter, scope, expr.args[i -1]);
+                    __autoreleasing MFValue *argValue = [inter.stack pop];
+                    [argValue assignToCValuePointer:ptr typeEncoding:typeEncoding];
+                    [invocation setArgument:ptr atIndex:i];
+                }
+                [invocation invoke];
+                const char *retType = [sig methodReturnType];
+                retType = removeTypeEncodingPrefix((char *)retType);
+                MFValue *retValue;
+                if (*retType != 'v') {
+                    void *retValuePtr = alloca(mf_size_with_encoding(retType));
+                    [invocation getReturnValue:retValuePtr];
+                    retValue = [[MFValue alloc] initWithCValuePointer:retValuePtr typeEncoding:retType bridgeTransfer:NO];
+                }else{
+                    retValue = [MFValue voidValueInstance];
+                }
+                [inter.stack push:retValue];
+            }
 			break;
 		}
 			
 		default:
+            mf_throw_error(expr.lineNumber, MFRuntimeErrorCallCanNotBeCalleeValue, @"expression can not be callee");
 			break;
 	}
 	
-	
-	
-	
+}
+
+static MFValue * call_c_function(NSUInteger lineNumber, MFValue *callee, NSArray<MFValue *> *argValues){
+    void *functionPtr = callee.pointerValue;
+    NSArray<NSString *> *paramListTypeEncode = callee.type.paramListTypeEncode;
+    NSString *returnTypeEncode = callee.type.returnTypeEncode;
+    NSUInteger argCount = paramListTypeEncode.count;
+    
+    ffi_type **ffiArgTypes = alloca(sizeof(ffi_type *) *argCount);
+    for (int i = 0; i < argCount; i++) {
+        ffiArgTypes[i] = mf_ffi_type_with_type_encoding(paramListTypeEncode[i].UTF8String);
+    }
+    
+    void **ffiArgs = alloca(sizeof(void *) *argCount);
+    for (int  i = 0; i < argCount; i++) {
+        size_t size = ffiArgTypes[i]->size;
+        void *ffiArgPtr = alloca(size);
+        ffiArgs[i] = ffiArgPtr;
+        MFValue *argValue = argValues[i];
+        [argValue assignToCValuePointer:ffiArgPtr typeEncoding:paramListTypeEncode[i].UTF8String];
+    }
+
+    ffi_cif cif;
+    ffi_type *returnFfiType = mf_ffi_type_with_type_encoding(returnTypeEncode.UTF8String);;
+    ffi_status ffiPrepStatus = ffi_prep_cif(&cif, FFI_DEFAULT_ABI, (unsigned int)argCount, returnFfiType, ffiArgTypes);
+
+    if (ffiPrepStatus == FFI_OK) {
+        void *returnPtr = NULL;
+        if (returnFfiType->size) {
+            returnPtr = alloca(returnFfiType->size);
+        }
+        ffi_call(&cif, functionPtr, returnPtr, ffiArgs);
+
+        MFValue *value = [[MFValue alloc] initWithCValuePointer:returnPtr typeEncoding:returnTypeEncode.UTF8String bridgeTransfer:NO];
+        return value;
+    }
+    mf_throw_error(lineNumber, MFRuntimeErrorCallCFunctionFailure, @"call CFunction failure");
+    return nil;
 }
 
 
-
-
+static void eval_cfunction_expression(MFInterpreter *inter, MFScopeChain *scope, MFCFuntionExpression *expr){
+    MFExpression *cfunNameOrPointerExpr = expr.cfunNameOrPointerExpr;
+    eval_expression(inter, scope, cfunNameOrPointerExpr);
+    MFValue *cfunNameOrPointer = [inter.stack pop];
+    if (cfunNameOrPointer.type.typeKind != MF_TYPE_C_STRING && cfunNameOrPointer.type.typeKind != MF_TYPE_POINTER) {
+        mf_throw_error(cfunNameOrPointerExpr.lineNumber, MFRuntimeErrorIllegalParameterType, @" CFuntion must accept a CString type or Pointer type, not %@!",cfunNameOrPointer.type.typeName);
+        return;
+    }
+    
+    MFValue *value = [[MFValue alloc] init];
+    MFTypeSpecifier *type = mf_create_type_specifier(MF_TYPE_C_FUNCTION);
+    value.type = type;
+    
+    if (cfunNameOrPointer.type.typeKind == MF_TYPE_C_STRING) {
+        void *pointerValue = symdl(cfunNameOrPointer.cstringValue);
+        if (!pointerValue) {
+            mf_throw_error(cfunNameOrPointerExpr.lineNumber, MFRuntimeErrorNotFoundCFunction, @"not found CFunction: %s",cfunNameOrPointer.cstringValue);
+            return;
+        }
+        value.pointerValue = pointerValue;
+    }else{
+        value.pointerValue = cfunNameOrPointer.pointerValue;
+    }
+    [inter.stack push:value];
+}
 
 
 
@@ -1357,6 +1787,9 @@ static void eval_expression(MFInterpreter *inter, MFScopeChain *scope, __kindof 
 		case MF_BOOLEAN_EXPRESSION:
 			eval_bool_exprseeion(inter, expr);
 			break;
+        case MF_U_INT_EXPRESSION:
+            eval_u_interger_expression(inter, expr);
+            break;
 		case MF_INT_EXPRESSION:
 			eval_interger_expression(inter, expr);
 			break;
@@ -1439,6 +1872,9 @@ static void eval_expression(MFInterpreter *inter, MFScopeChain *scope, __kindof 
 		case MF_AT_EXPRESSION:
 			eval_at_expression(inter, scope, expr);
 			break;
+        case MF_GET_ADDRESS_EXPRESSION:
+            eval_get_address_expresion(inter, scope, expr);
+            break;
 		case NSC_NEGATIVE_EXPRESSION:
 			eval_negative_expression(inter, scope, expr);
 			break;
@@ -1463,6 +1899,9 @@ static void eval_expression(MFInterpreter *inter, MFScopeChain *scope, __kindof 
 		case MF_FUNCTION_CALL_EXPRESSION:
 			eval_function_call_expression(inter, scope, expr);
 			break;
+        case MF_C_FUNCTION_EXPRESSION:
+            eval_cfunction_expression(inter, scope, expr);
+            break;
 		default:
 			break;
 	}

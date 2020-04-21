@@ -1,5 +1,9 @@
+[MangoFix中文资料集合](README-CN.md)
+
+MangoFix 学习讨论QQ群：766215773
+
 # Mango
-Mango is a DSL which syntax is very similar to Objective-C，Mango is also an iOS  App hotfix SDK. You can use Mango method replace any Objective-C method.
+MangoFix is a DSL which syntax is very similar to Objective-C，MangoFix is also an iOS  App hotfix SDK. You can use MangoFix method replace any Objective-C method.
 
 
 ## Example
@@ -9,12 +13,47 @@ Mango is a DSL which syntax is very similar to Objective-C，Mango is also an iO
 
 @implementation AppDelegate
 
+- (BOOL)encryptPlainScirptToDocument{
+    NSError *outErr = nil;
+    BOOL writeResult = NO;
+    
+    NSURL *scriptUrl = [[NSBundle mainBundle] URLForResource:@"demo" withExtension:@"mg"];
+    NSString *planScriptString = [NSString stringWithContentsOfURL:scriptUrl encoding:NSUTF8StringEncoding error:&outErr];
+    if (outErr) goto err;
+    
+    {
+        NSURL *publicKeyUrl = [[NSBundle mainBundle] URLForResource:@"public_key.txt" withExtension:nil];
+        NSString *publicKey = [NSString stringWithContentsOfURL:publicKeyUrl encoding:NSUTF8StringEncoding error:&outErr];
+        if (outErr) goto err;
+        NSString *encryptedScriptString = [MFRSA encryptString:planScriptString publicKey:publicKey];
+        
+        NSString * encryptedPath= [(NSString *)[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject] stringByAppendingPathComponent:@"encrypted_demo.mg"];
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        if (![fileManager fileExistsAtPath:encryptedPath]) {
+            [fileManager createFileAtPath:encryptedPath contents:nil attributes:nil];
+        }
+        writeResult = [encryptedScriptString writeToFile:encryptedPath atomically:YES encoding:NSUTF8StringEncoding error:&outErr];
+    }
+err:
+    if (outErr) NSLog(@"%@",outErr);
+    return writeResult;
+}
+
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    NSString *path = [[NSBundle mainBundle] pathForResource:@"demo" ofType:@"mg"];
-    NSURL *scriptUrl = [NSURL fileURLWithPath:path];
-    MFContext *context = [[MFContext alloc] init];
-    [context evalMangoScriptWithURL:scriptUrl];
-    return YES;
+    BOOL writeResult = [self encryptPlainScirptToDocument];
+    if (!writeResult) {
+        return NO;
+    }
+    
+    NSURL *privateKeyUrl = [[NSBundle mainBundle] URLForResource:@"private_key.txt" withExtension:nil];
+    NSString *privateKey = [NSString stringWithContentsOfURL:privateKeyUrl encoding:NSUTF8StringEncoding error:nil];
+    
+    MFContext *context = [[MFContext alloc] initWithRASPrivateKey:privateKey];
+    
+    NSString * encryptedPath= [(NSString *)[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject] stringByAppendingPathComponent:@"encrypted_demo.mg"];
+    NSURL *scriptUrl = [NSURL fileURLWithPath:encryptedPath];
+    [context evalMangoScriptWithURL:scriptUrl];
+	return YES;
 }
 
 @end
@@ -251,6 +290,61 @@ self.resultView.text = @"here is Mango method";
 }
 
 
+//静态变量和取地址运算符示例
+- (void)staticVarAndGetVarAddressOperExample{
+    static int i = 0;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        i++;
+    });
+    self.resultView.text = @""+i;
+}
+
+//C函数变量示例
+- (void)cfuntionVarExample{
+    int NSDocumentDirectory = 9;
+    int NSUserDomainMask = 1;
+
+    int  O_WRONLY = 0x0001;
+    uint S_IRWXU  = 0000700;
+
+
+    CFunction<id, int, int, BOOL> NSSearchPathForDirectoriesInDomains = CFunction("NSSearchPathForDirectoriesInDomains");
+    CFunction<int, char *, int, int> open = CFunction("open");
+    CFunction<size_t, int, void *, size_t> write = CFunction("write");
+    CFunction<int, int> close = CFunction("close");
+
+
+    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).lastObject;
+
+    NSString *path = doc.stringByAppendingPathComponent:(@"MangoFxi.html");
+    NSFileManager *fileManager = NSFileManager.defaultManager();
+    if (!fileManager.fileExistsAtPath:(path)) {
+        BOOL ret = fileManager.createFileAtPath:contents:attributes:(path, nil, nil);
+        if (!ret) {
+            self.resultView.text = @"创建文件失败";
+            return;
+        }
+    }
+    int fd = open(path.UTF8String,O_WRONLY, S_IRWXU);
+    if (fd < 0) {
+        self.resultView.text = @"打开文件失败";
+        return;
+    }
+    NSURL *url = NSURL.URLWithString:(@"https://github.com/YPLiang19/Mango");
+    NSData *data = NSData.dataWithContentsOfURL:(url);
+    write(fd, data.bytes, data.length);
+    close(fd);
+    self.resultView.text = @"文件写入成功:" + path;
+}
+
+
+//typedef示例
+- (void)typedefExaple{
+    self.resultView.text = @"typedef long alias_long;";
+}
+
+
 }
 
 
@@ -276,8 +370,6 @@ class SubMyController:SuperMyController {
 		self.view.addSubview:(view);
 		view.backgroundColor = UIColor.redColor();
 		self.rotateView = view;
-
-
 }
 
 }
@@ -320,5 +412,10 @@ class SubMyController:SuperMyController {
 	
 #### Pointer
  	Pointer ptr; // C pointer. 
+ 	
+#### CFunction
+   	CFunction<returnType,arg1Type,arg2Type,...> ptr = CFunction("c function name"); // CFunction. 
 	
-	
+
+## Ohter
+    For more information on MangFix usage, see the MangoFix project unit test.

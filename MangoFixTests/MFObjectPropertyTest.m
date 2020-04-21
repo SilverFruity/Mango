@@ -14,4 +14,15 @@
     return nil;
 }
 
+- (id)testWeakObjectProperty{
+    return nil;
+}
+
+- (id)testIvar{
+    return nil;
+}
+
+- (NSInteger)testProMathAdd{
+    return 0;
+}
 @end

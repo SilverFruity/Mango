@@ -5,20 +5,22 @@
 //  Created by jerry.yong on 2017/12/25.
 //  Copyright © 2017年 yongpengliang. All rights reserved.
 //
-
+//typedef <#existing#> <#new#>;
 #import <UIKit/UIKit.h>
 #include <string.h>
-#import "create.h"
-#import "execute.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import "create.h"
+#import "execute.h"
 #import "util.h"
 #import "ffi.h"
 #import "runenv.h"
 #import "MFValue+Private.h"
+#import "MFWeakPropertyBox.h"
+#import "MFPropertyMapTable.h"
+#import "MFStaticVarTable.h"
 
-
-static const void *propKey(NSString *propName) {
+const void *mf_propKey(NSString *propName) {
     static NSMutableDictionary *_propKeys;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -33,25 +35,46 @@ static const void *propKey(NSString *propName) {
 }
 
 
-static MFValue *default_value_with_type_specifier(MFInterpreter *inter, MFTypeSpecifier *typeSpecifier){
-	MFValue *value = [[MFValue alloc] init];
-	value.type = typeSpecifier;
-	if (typeSpecifier.typeKind == MF_TYPE_STRUCT) {
-		 size_t size = mf_struct_size_with_encoding([typeSpecifier typeEncoding]);
-		value.pointerValue = malloc(size);
-	}
-	return value;
+static MFValue *default_value_with_type_specifier( MFTypeSpecifier *typeSpecifier,MFDeclarationModifier modifier){
+    MFValue *value = [[MFValue alloc] init];
+    value.modifier = modifier;
+    value.type = typeSpecifier;
+    if (typeSpecifier.typeKind == MF_TYPE_STRUCT) {
+        size_t size = mf_size_with_encoding([typeSpecifier typeEncoding]);
+        value.pointerValue = malloc(size);
+    }
+    return value;
 }
 
 
 
 static void execute_declaration(MFInterpreter *inter, MFScopeChain *scope, MFDeclaration *declaration){
-	MFValue *value = default_value_with_type_specifier(inter, declaration.type);
-	if (declaration.initializer) {
-		MFValue *initValue = mf_eval_expression(inter, scope, declaration.initializer);
-		[value assignFrom:initValue];
-	}
-	[scope setValue:value withIndentifier:declaration.name];
+    BOOL staticVar = declaration.modifier & MFDeclarationModifierStatic;
+    __block MFValue *value = nil;
+    
+    void (^initValueBlock)(void) = ^(){
+        value = default_value_with_type_specifier(declaration.type,declaration.modifier);
+        if (declaration.initializer) {
+            MFValue *initValue = mf_eval_expression(inter, scope, declaration.initializer);
+            [value assignFrom:initValue];
+        }
+    };
+    
+    if (staticVar) {
+        NSString *key = [NSString stringWithFormat:@"%p",(void *)declaration];
+        value = [[MFStaticVarTable shareInstance] getStaticVarValueWithKey:key];
+        if (value) {
+            [scope setValue:value withIndentifier:declaration.name];
+        }else{
+            initValueBlock();
+            [scope setValue:value withIndentifier:declaration.name];
+            [[MFStaticVarTable shareInstance] setStaticVarValue:value withKey:key];
+        }
+    }else{
+        initValueBlock();
+        [scope setValue:value withIndentifier:declaration.name];
+    }
+	
 }
 
 
@@ -178,9 +201,7 @@ static MFStatementResult *execute_for_each_statement(MFInterpreter *inter, MFSco
 		statement.identifierExpr = identifierExpr;
 	}
 	
-	
-	
-	MFValue *arrValue = mf_eval_expression(inter, scope, statement.arrayExpr);
+	MFValue *arrValue = mf_eval_expression(inter, scope, statement.collectionExpr);
 	if (arrValue.type.typeKind != MF_TYPE_OBJECT) {
 		NSCAssert(0, @"");
 	}
@@ -203,8 +224,8 @@ static MFStatementResult *execute_for_each_statement(MFInterpreter *inter, MFSco
 	}
 	[forScope setMangoBlockVarNil];
 	return res ?: [MFStatementResult normalResult];
-	
 }
+
 
 static MFStatementResult *execute_while_statement(MFInterpreter *inter, MFScopeChain *scope,  MFWhileStatement *statement){
 	MFStatementResult *res;
@@ -227,6 +248,7 @@ static MFStatementResult *execute_while_statement(MFInterpreter *inter, MFScopeC
 	[whileScope setMangoBlockVarNil];
 	return res ?: [MFStatementResult normalResult];
 }
+
 
 static MFStatementResult *execute_do_while_statement(MFInterpreter *inter, MFScopeChain *scope,  MFDoWhileStatement *statement){
 	MFStatementResult *res;
@@ -251,7 +273,6 @@ static MFStatementResult *execute_do_while_statement(MFInterpreter *inter, MFSco
 }
 
 
-
 static MFStatementResult *execute_return_statement(MFInterpreter *inter, MFScopeChain *scope,  MFReturnStatement *statement){
 	MFStatementResult *res = [MFStatementResult returnResult];
 	if (statement.retValExpr) {
@@ -271,7 +292,6 @@ static MFStatementResult *execute_break_statement(){
 static MFStatementResult *execute_continue_statement(){
 	return [MFStatementResult continueResult];
 }
-
 
 
 static  MFStatementResult *execute_statement(MFInterpreter *inter, MFScopeChain *scope, __kindof MFStatement *statement){
@@ -349,7 +369,8 @@ MFStatementResult *mf_execute_statement_list(MFInterpreter *inter, MFScopeChain 
 MFValue * mf_call_mf_function(MFInterpreter *inter, MFScopeChain *scope, MFFunctionDefinition *func, NSArray<MFValue *> *args){
 	NSArray<MFParameter *> *params = func.params;
 	if (params.count != args.count) {
-		NSCAssert(0, @"");
+        mf_throw_error(func.lineNumber, MFRuntimeErrorParameterListCountNoMatch, @"expect count: %zd, pass in cout:%zd",params.count, args.count);
+        return nil;
 	}
 	MFScopeChain *funScope = [MFScopeChain scopeChainWithNext:scope];
 	NSUInteger i = 0;
@@ -396,7 +417,7 @@ static void define_class(MFInterpreter *interpreter,MFClassDefinition *classDefi
 		}
 		
 		if (!superClass) {
-			NSCAssert(0, @"not found super class: %@",classDefinition.name);
+            mf_throw_error(classDefinition.lineNumber, MFRuntimeErrorNotFoundSuperClass, @"not found super class: %@",superClassName);
 			return;
 		}
 		Class clazz = objc_allocateClassPair(superClass, classDefinition.name.UTF8String, 0);
@@ -405,7 +426,7 @@ static void define_class(MFInterpreter *interpreter,MFClassDefinition *classDefi
 		Class superClass = class_getSuperclass(clazz);
 		char const *superClassName = class_getName(superClass);
 		if (strcmp(classDefinition.superNmae.UTF8String, superClassName)) {
-			NSCAssert(0, @"类 %@ 在Mango中与OC中父类名称不一致,Mango:%@ OC:%s ",classDefinition.name,classDefinition.superNmae, superClassName);
+            mf_throw_error(classDefinition.lineNumber, @"MFRuntimeErrorSuperClassNoMatch", @"MangoFix class: %@:%@, but Objective-C class: %@:%s",classDefinition.name,classDefinition.superNmae, classDefinition.name, superClassName);
 			return;
 		}
 	}
@@ -413,22 +434,31 @@ static void define_class(MFInterpreter *interpreter,MFClassDefinition *classDefi
 
 
 
-
 void getterInter(ffi_cif *cif, void *ret, void **args, void *userdata){
 	MFPropertyDefinition *propDef = (__bridge MFPropertyDefinition *)userdata;
 	id _self = (__bridge id)(*(void **)args[0]);
 	NSString *propName = propDef.name;
-	id propValue = objc_getAssociatedObject(_self, propKey(propName));
+	id propValue = objc_getAssociatedObject(_self, mf_propKey(propName));
 	const char *type = [propDef.typeSpecifier typeEncoding];
-	__autoreleasing MFValue *value;
+    __autoreleasing MFValue *value;
 	if (!propValue) {
 		value = [MFValue defaultValueWithTypeEncoding:type];
-		[value assign2CValuePointer:ret typeEncoding:type];
+		[value assignToCValuePointer:ret typeEncoding:type];
 	}else if(*type == '@'){
-		*(void **)ret = (__bridge void *)propValue;
+        if ([propValue isKindOfClass:[MFWeakPropertyBox class]]) {
+            MFWeakPropertyBox *box = propValue;
+            if (box.target) {
+                *(void **)ret = (__bridge void *)box.target;
+            }else{
+                value = [MFValue defaultValueWithTypeEncoding:type];
+                [value assignToCValuePointer:ret typeEncoding:type];
+            }
+        }else{
+            *(void **)ret = (__bridge void *)propValue;
+        }
 	}else{
 		value = propValue;
-		[value assign2CValuePointer:ret typeEncoding:type];
+		[value assignToCValuePointer:ret typeEncoding:type];
 	}
 	
 	
@@ -447,49 +477,16 @@ void setterInter(ffi_cif *cif, void *ret, void **args, void *userdata){
 	}
 	NSString *propName = propDef.name;
 	
-	objc_AssociationPolicy associationPolicy = OBJC_ASSOCIATION_RETAIN_NONATOMIC;
-	MFPropertyModifier modifier = propDef.modifier;
-	switch (modifier & MFPropertyModifierMemMask) {
-		case MFPropertyModifierMemStrong:
-			switch (modifier & MFPropertyModifierAtomicMask) {
-				case MFPropertyModifierAtomic:
-					associationPolicy = OBJC_ASSOCIATION_RETAIN;
-					break;
-				case MFPropertyModifierNonatomic:
-					associationPolicy = OBJC_ASSOCIATION_RETAIN_NONATOMIC;
-					break;
-				default:
-					break;
-			}
-			break;
-		case MFPropertyModifierMemWeak:
-		case MFPropertyModifierMemAssign:
-			associationPolicy = OBJC_ASSOCIATION_ASSIGN;
-			break;
-			
-		case MFPropertyModifierMemCopy:
-			switch (modifier & MFPropertyModifierAtomicMask) {
-				case MFPropertyModifierAtomic:
-					associationPolicy = OBJC_ASSOCIATION_COPY;
-					break;
-				case MFPropertyModifierNonatomic:
-					associationPolicy = OBJC_ASSOCIATION_COPY_NONATOMIC;
-					break;
-				default:
-					break;
-			}
-			break;
-			
-		default:
-			break;
-	}
-	objc_setAssociatedObject(_self, propKey(propName), value, associationPolicy);
-	
-	
-	
-	
+    MFPropertyModifier modifier = propDef.modifier;
+    if ((modifier & MFPropertyModifierMemMask) == MFPropertyModifierMemWeak) {
+        value = [[MFWeakPropertyBox alloc] initWithTarget:value];
+    }
+	objc_AssociationPolicy associationPolicy = mf_AssociationPolicy_with_PropertyModifier(modifier);
+	objc_setAssociatedObject(_self, mf_propKey(propName), value, associationPolicy);
+    
 }
-static void replace_getter_method(MFInterpreter *inter ,Class clazz, MFPropertyDefinition *prop){
+
+static void replace_getter_method(NSUInteger lineNumber, MFInterpreter *inter ,Class clazz, MFPropertyDefinition *prop){
 	SEL getterSEL = NSSelectorFromString(prop.name);
 	const char *retTypeEncoding  = [prop.typeSpecifier typeEncoding];
 	ffi_type *returnType = mf_ffi_type_with_type_encoding(retTypeEncoding);
@@ -509,7 +506,7 @@ static void replace_getter_method(MFInterpreter *inter ,Class clazz, MFPropertyD
 	free((void *)typeEncoding);
 }
 
-static void replace_setter_method(MFInterpreter *inter ,Class clazz, MFPropertyDefinition *prop){
+static void replace_setter_method(NSUInteger lineNumber ,MFInterpreter *inter ,Class clazz, MFPropertyDefinition *prop){
 	NSString *str1 = [[prop.name substringWithRange:NSMakeRange(0, 1)] uppercaseString];
 	NSString *str2 = prop.name.length > 1 ? [prop.name substringFromIndex:1] : nil;
 	SEL setterSEL = NSSelectorFromString([NSString stringWithFormat:@"set%@%@:",str1,str2]);
@@ -521,7 +518,7 @@ static void replace_setter_method(MFInterpreter *inter ,Class clazz, MFPropertyD
 	argTypes[1] = &ffi_type_pointer;
 	argTypes[2] = mf_ffi_type_with_type_encoding([prop.typeSpecifier typeEncoding]);
 	if (argTypes[2] == NULL) {
-		NSCAssert(0, @"");
+        mf_throw_error(lineNumber, @"", @"");
 	}
 
 	void *imp = NULL;
@@ -572,9 +569,10 @@ static void replace_prop(MFInterpreter *inter ,Class clazz, MFPropertyDefinition
 	}
 	objc_property_attribute_t attrs[] = { type, memAttr, atomicAttr };
 	class_replaceProperty(clazz, prop.name.UTF8String, attrs, 3);
-	
-	replace_getter_method(inter, clazz, prop);
-	replace_setter_method(inter, clazz, prop);
+    MFPropertyMapTableItem *propItem = [[MFPropertyMapTableItem alloc] initWithClass:clazz property:prop];
+    [[MFPropertyMapTable shareInstance] addPropertyMapTableItem:propItem];
+	replace_getter_method(prop.lineNumber, inter, clazz, prop);
+	replace_setter_method(prop.lineNumber ,inter, clazz, prop);
 	
 }
 
@@ -615,7 +613,7 @@ static void replaceIMP(ffi_cif *cif, void *ret, void **args, void *userdata){
         [argValues addObject:argValue];
     }
     __autoreleasing MFValue *retValue = mf_call_mf_function(inter, classScope, method.functionDefinition, argValues);
-    [retValue assign2CValuePointer:ret typeEncoding:[methodSignature methodReturnType]];
+    [retValue assignToCValuePointer:ret typeEncoding:[methodSignature methodReturnType]];
 }
 
 
@@ -631,8 +629,6 @@ static void replace_method(MFInterpreter *interpreter,Class clazz, MFMethodDefin
 	
 	MFMethodMapTableItem *item = [[MFMethodMapTableItem alloc] initWithClass:clazz inter:interpreter method:method];
 	[[MFMethodMapTable shareInstance] addMethodMapTableItem:item];
-	
-	
 	
 	BOOL needFreeTypeEncoding = NO;
 	const char *typeEncoding;
@@ -699,7 +695,6 @@ static void fix_class(MFInterpreter *interpreter,MFClassDefinition *classDefinit
 	for (MFMethodDefinition *instanceMethod in classDefinition.instanceMethods) {
 		replace_method(interpreter, clazz, instanceMethod);
 	}
-	
 }
 
 

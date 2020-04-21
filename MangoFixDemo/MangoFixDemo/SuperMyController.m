@@ -7,6 +7,7 @@
 //
 
 #import "SuperMyController.h"
+#import <Masonry/Masonry.h>
 
 @interface SuperMyController ()
 
@@ -16,14 +17,13 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-}
-
-- (void)didReceiveMemoryWarning {
-    [super didReceiveMemoryWarning];
+    self.view.backgroundColor = [UIColor whiteColor];
 }
 
 - (void)dealloc{
 	NSLog(@"SuperMyController::%@", NSStringFromSelector(_cmd));
 }
+
+
 
 @end

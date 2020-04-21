@@ -58,7 +58,9 @@ static void increment_line_number(){
 <INITIAL>"}" {return RC; }
 <INITIAL>"?" {return QUESTION; }
 <INITIAL>"." { return DOT; }
+<INITIAL>"&" {return ADDRESS; }
 <INITIAL>"@" { return AT; }
+
 
 
 <INITIAL>"&&" {return AND; }
@@ -72,27 +74,21 @@ static void increment_line_number(){
 <INITIAL>">" {return GT; }
 <INITIAL>">=" {return GE; }   
 
-
 <INITIAL>"-" {return SUB; }
 <INITIAL>"+" {return ADD; }
 <INITIAL>"*" {return ASTERISK; }
 <INITIAL>"/" {return DIV; }
 <INITIAL>"%" {return MOD; }
+<INITIAL>"++" { return INCREMENT; }
+<INITIAL>"--" { return DECREMENT; }
 
 <INITIAL>"-=" {return SUB_ASSIGN; }
 <INITIAL>"+=" {return ADD_ASSIGN; }
 <INITIAL>"*=" {return ASTERISK_ASSIGN; }
 <INITIAL>"/=" {return DIV_ASSIGN; }
 <INITIAL>"%=" {return MOD_ASSIGN; }
-
 <INITIAL>"=" {return ASSIGN; }
 
-
-
-<INITIAL>"++" { return INCREMENT; }
-<INITIAL>"--" { return DECREMENT; }
-
-      
 <INITIAL>"declare"  {return DECLARE; }
 <INITIAL>"struct"  {return STRUCT; }
 <INITIAL>"class"  {return CLASS; }
@@ -111,13 +107,7 @@ static void increment_line_number(){
 <INITIAL>"continue"  {return CONTINUE; }
 <INITIAL>"return" {return RETURN; }
 
-
-
-
 <INITIAL>"#If" {return ANNOTATION_IF; }
-
-
-
 
 <INITIAL>"@property" {return PROPERTY; }
 <INITIAL>"@selector" {return SELECTOR; }
@@ -129,6 +119,7 @@ static void increment_line_number(){
 <INITIAL>"atomic" {return ATOMIC; }
 
 <INITIAL>"void" {return VOID; }
+<INITIAL>"char" {return CHAR; }
 <INITIAL>"BOOL" {return BOOL_; }
 <INITIAL>"int" {return INT; }
 <INITIAL>"uint" {return U_INT; }
@@ -139,6 +130,11 @@ static void increment_line_number(){
 <INITIAL>"SEL" {return SEL_; }
 <INITIAL>"Block" {return BLOCK; }
 <INITIAL>"Pointer" {return POINTER; }
+<INITIAL>"CFunction"  {return C_FUNCTION; }
+<INITIAL>"__weak" {return __WEAK; }
+<INITIAL>"__strong" {return __STRONG; }
+<INITIAL>"static" {return STATIC; }
+<INITIAL>"typedef" {return TYPEDEF; }
 
 <INITIAL>"self" {
 	MFExpression *expression = mf_create_expression(MF_SELF_EXPRESSION);
@@ -171,6 +167,7 @@ static void increment_line_number(){
 	yylval.expression = (__bridge_retained void *)expression;
 	return YES_;
 }
+
 <INITIAL>"NO" {
 	MFExpression *expression = mf_create_expression(MF_BOOLEAN_EXPRESSION);
 	expression.boolValue = NO;
@@ -179,15 +176,11 @@ static void increment_line_number(){
 	
 }
 
-
-
 <INITIAL>[A-Za-z_$][A-Za-z_$0-9]* {
 	NSString *identifier = mf_create_identifier(yytext);
 	yylval.identifier = (__bridge_retained void *)identifier;
 	return IDENTIFIER;
 }
-
-
 
 <INITIAL>[1-9][0-9]* {
 	MFExpression *expression = mf_create_expression(MF_INT_EXPRESSION);
@@ -198,15 +191,22 @@ static void increment_line_number(){
 	return INTETER_LITERAL;
 }
 
-
-
 <INITIAL>"0"[xX][0-9a-fA-F]+ {
-	MFExpression *expression = mf_create_expression(MF_INT_EXPRESSION);
+	MFExpression *expression = mf_create_expression(MF_U_INT_EXPRESSION);
 	long long int val;
 	sscanf(yytext,"%llx",&val);
-	expression.integerValue = val;
+	expression.uintValue = val;
 	yylval.expression = (__bridge_retained void *)expression;
 	return INTETER_LITERAL;
+}
+
+<INITIAL>"0"[0-7]+ {
+    MFExpression *expression = mf_create_expression(MF_U_INT_EXPRESSION);
+    long long int val;
+    sscanf(yytext,"%llo",&val);
+    expression.uintValue = val;
+    yylval.expression = (__bridge_retained void *)expression;
+    return INTETER_LITERAL;
 }
 
 
@@ -216,7 +216,6 @@ static void increment_line_number(){
 	yylval.expression = (__bridge_retained void *)expression;
 	return INTETER_LITERAL;
 }
-
 
 <INITIAL>[0-9]+\.[0-9]+ {
 	MFExpression *expression = mf_create_expression(MF_DOUBLE_EXPRESSION);
@@ -238,14 +237,14 @@ static void increment_line_number(){
 <INITIAL>"/*" {	BEGIN C_COMMENT; }
 <INITIAL>"//" { BEGIN CC_COMMENT; }
 <INITIAL>.	{
-	mf_compile_err(0,MFCompileErrorParseErr);
+    mf_throw_error(mf_get_current_compile_util().currentLineNumber,MFParseError,@"illegal input character:%s", yytext);
 }
 
 <C_COMMENT>\n { increment_line_number();}
 <C_COMMENT>. ;
 <C_COMMENT>"*/"	{ BEGIN INITIAL; }
 <C_COMMENT><<EOF>>	{
-	mf_compile_err(0,MFCompileErrorParseErr);
+    mf_throw_error(mf_get_current_compile_util().currentLineNumber,MFParseError,@"Invalid input end of file");
 }
 
 <CC_COMMENT>.	;

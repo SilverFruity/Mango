@@ -55,7 +55,7 @@ static void execute_declaration(MFInterpreter *inter, MFScopeChain *scope, MFDec
     void (^initValueBlock)(void) = ^(){
         value = default_value_with_type_specifier(declaration.type,declaration.modifier);
         if (declaration.initializer) {
-            MFValue *initValue = mf_eval_expression(inter, scope, declaration.initializer);
+            MFValue *initValue = mf_execute_expression(inter, scope, declaration.initializer);
             [value assignFrom:initValue];
         }
     };
@@ -82,7 +82,7 @@ static MFStatementResult *execute_else_if_list(MFInterpreter *inter, MFScopeChai
 	MFStatementResult *res;
 	*executed = NO;
 	for (MFElseIf *elseIf in elseIfList) {
-		MFValue *conValue = mf_eval_expression(inter, scope, elseIf.condition);
+		MFValue *conValue = mf_execute_expression(inter, scope, elseIf.condition);
 		if ([conValue isSubtantial]) {
 			MFScopeChain *elseIfScope = [MFScopeChain scopeChainWithNext:scope];
 			res = mf_execute_statement_list(inter, elseIfScope, elseIf.thenBlock.statementList);
@@ -97,7 +97,7 @@ static MFStatementResult *execute_else_if_list(MFInterpreter *inter, MFScopeChai
 
 static MFStatementResult *execute_if_statement(MFInterpreter *inter, MFScopeChain *scope, MFIfStatement *statement){
 	MFStatementResult *res;
-	MFValue *conValue = mf_eval_expression(inter, scope, statement.condition);
+	MFValue *conValue = mf_execute_expression(inter, scope, statement.condition);
 	if ([conValue isSubtantial]) {
 		MFScopeChain *thenScope = [MFScopeChain scopeChainWithNext:scope];
 		res = mf_execute_statement_list(inter, thenScope, statement.thenBlock.statementList);
@@ -118,11 +118,11 @@ static MFStatementResult *execute_if_statement(MFInterpreter *inter, MFScopeChai
 
 static MFStatementResult *execute_switch_statement(MFInterpreter *inter, MFScopeChain *scope, MFSwitchStatement *statement){
 	MFStatementResult *res;
-	MFValue *value = mf_eval_expression(inter, scope, statement.expr);
+	MFValue *value = mf_execute_expression(inter, scope, statement.expr);
 	BOOL hasMatch = NO;
 	for (MFCase *case_ in statement.caseList) {
 		if (!hasMatch) {
-			MFValue *caseValue = mf_eval_expression(inter, scope, case_.expr);
+			MFValue *caseValue = mf_execute_expression(inter, scope, case_.expr);
 			BOOL equal = mf_equal_value(case_.expr.lineNumber, value, caseValue);
 			if (equal) {
 				hasMatch = YES;
@@ -157,13 +157,13 @@ static MFStatementResult *execute_for_statement(MFInterpreter *inter, MFScopeCha
 	MFStatementResult *res;
 	MFScopeChain *forScope = [MFScopeChain scopeChainWithNext:scope];
 	if (statement.initializerExpr) {
-		mf_eval_expression(inter, forScope, statement.initializerExpr);
+		mf_execute_expression(inter, forScope, statement.initializerExpr);
 	}else if (statement.declaration){
 		execute_declaration(inter, forScope, statement.declaration);
 	}
 	
 	for (;;) {
-		MFValue *conValue = mf_eval_expression(inter, forScope, statement.condition);
+		MFValue *conValue = mf_execute_expression(inter, forScope, statement.condition);
 		if (![conValue isSubtantial]) {
 			break;
 		}
@@ -177,7 +177,7 @@ static MFStatementResult *execute_for_statement(MFInterpreter *inter, MFScopeCha
 			res.type = MFStatementResultTypeNormal;
 		}
 		if (statement.post) {
-			mf_eval_expression(inter, forScope, statement.post);
+			mf_execute_expression(inter, forScope, statement.post);
 		}
 		
 	}
@@ -201,7 +201,7 @@ static MFStatementResult *execute_for_each_statement(MFInterpreter *inter, MFSco
 		statement.identifierExpr = identifierExpr;
 	}
 	
-	MFValue *arrValue = mf_eval_expression(inter, scope, statement.collectionExpr);
+	MFValue *arrValue = mf_execute_expression(inter, scope, statement.collectionExpr);
 	if (arrValue.type.typeKind != MF_TYPE_OBJECT) {
 		NSCAssert(0, @"");
 	}
@@ -231,7 +231,7 @@ static MFStatementResult *execute_while_statement(MFInterpreter *inter, MFScopeC
 	MFStatementResult *res;
 	MFScopeChain *whileScope = [MFScopeChain scopeChainWithNext:scope];
 	for (;;) {
-		MFValue *conValue = mf_eval_expression(inter, whileScope, statement.condition);
+		MFValue *conValue = mf_execute_expression(inter, whileScope, statement.condition);
 		if (![conValue isSubtantial]) {
 			break;
 		}
@@ -263,7 +263,7 @@ static MFStatementResult *execute_do_while_statement(MFInterpreter *inter, MFSco
 		}else if (res.type == MFStatementResultTypeContinue){
 			res.type = MFStatementResultTypeNormal;
 		}
-		MFValue *conValue = mf_eval_expression(inter, whileScope, statement.condition);
+		MFValue *conValue = mf_execute_expression(inter, whileScope, statement.condition);
 		if (![conValue isSubtantial]) {
 			break;
 		}
@@ -276,7 +276,7 @@ static MFStatementResult *execute_do_while_statement(MFInterpreter *inter, MFSco
 static MFStatementResult *execute_return_statement(MFInterpreter *inter, MFScopeChain *scope,  MFReturnStatement *statement){
 	MFStatementResult *res = [MFStatementResult returnResult];
 	if (statement.retValExpr) {
-		res.reutrnValue = mf_eval_expression(inter, scope, statement.retValExpr);
+		res.reutrnValue = mf_execute_expression(inter, scope, statement.retValExpr);
 	}else{
 		res.reutrnValue = [MFValue voidValueInstance];
 	}
@@ -298,7 +298,7 @@ static  MFStatementResult *execute_statement(MFInterpreter *inter, MFScopeChain 
 	MFStatementResult *res;
 	switch (statement.kind) {
 		case MFStatementKindExpression:
-			mf_eval_expression(inter, scope, [(MFExpressionStatement *)statement expr]);
+			mf_execute_expression(inter, scope, [(MFExpressionStatement *)statement expr]);
 			res = [MFStatementResult normalResult];
 			break;
 		case MFStatementKindDeclaration:{
@@ -393,7 +393,7 @@ static void define_class(MFInterpreter *interpreter,MFClassDefinition *classDefi
 	if (classDefinition.annotationIfExprResult == AnnotationIfExprResultNoComputed) {
 		MFExpression *annotationIfConditionExpr = classDefinition.annotationIfConditionExpr;
 		if (annotationIfConditionExpr) {
-			MFValue *value = mf_eval_expression(interpreter, interpreter.topScope, annotationIfConditionExpr);
+			MFValue *value = mf_execute_expression(interpreter, interpreter.topScope, annotationIfConditionExpr);
 			classDefinition.annotationIfExprResult = value.isSubtantial ? AnnotationIfExprResultTrue : AnnotationIfExprResultFalse;
 			if (!value.isSubtantial) {
 				return;
@@ -535,7 +535,7 @@ static void replace_setter_method(NSUInteger lineNumber ,MFInterpreter *inter ,C
 
 static void replace_prop(MFInterpreter *inter ,Class clazz, MFPropertyDefinition *prop){
 	if (prop.annotationIfConditionExpr) {
-		MFValue *conValue = mf_eval_expression(inter, inter.topScope, prop.annotationIfConditionExpr);
+		MFValue *conValue = mf_execute_expression(inter, inter.topScope, prop.annotationIfConditionExpr);
 		if (![conValue isSubtantial]) {
 			return;
 		}
@@ -619,7 +619,7 @@ static void replaceIMP(ffi_cif *cif, void *ret, void **args, void *userdata){
 
 static void replace_method(MFInterpreter *interpreter,Class clazz, MFMethodDefinition *method){
 	if (method.annotationIfConditionExpr) {
-		MFValue *conValue = mf_eval_expression(interpreter, interpreter.topScope, method.annotationIfConditionExpr);
+		MFValue *conValue = mf_execute_expression(interpreter, interpreter.topScope, method.annotationIfConditionExpr);
 		if (![conValue isSubtantial]) {
 			return;
 		}
@@ -700,7 +700,7 @@ static void fix_class(MFInterpreter *interpreter,MFClassDefinition *classDefinit
 
 void add_struct_declare(MFInterpreter *interpreter, MFStructDeclare *structDeclaer){
 	if (structDeclaer.annotationIfConditionExpr) {
-		MFValue *conValue = mf_eval_expression(interpreter, interpreter.topScope, structDeclaer.annotationIfConditionExpr);
+		MFValue *conValue = mf_execute_expression(interpreter, interpreter.topScope, structDeclaer.annotationIfConditionExpr);
 		if (![conValue isSubtantial]) {
 			return;
 		}

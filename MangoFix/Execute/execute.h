@@ -16,7 +16,7 @@ void mf_add_built_in(MFInterpreter *inter);
 
 /* eval.m */
 BOOL mf_equal_value(NSUInteger lineNumber,MFValue *value1, MFValue *value2);
-MFValue *mf_eval_expression(MFInterpreter *inter, MFScopeChain *scope,MFExpression *expr);
+MFValue *mf_execute_expression(MFInterpreter *inter, MFScopeChain *scope,MFExpression *expr);
 void mf_interpret(MFInterpreter *inter);
 
 

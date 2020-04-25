@@ -18,7 +18,7 @@
 #import "MFValue+Private.h"
 #import "MFVarDeclareChain.h"
 
-static void execute_expression(MFInterpreter *inter, MFScopeChain *scope, __kindof MFExpression *expr);
+static MFValue * execute_expression(MFInterpreter *inter, MFScopeChain *scope, __kindof MFExpression *expr);
 
 static MFValue *invoke_values(id instance, SEL sel, NSArray<MFValue *> *argValues){
     if (!instance) {
@@ -63,17 +63,16 @@ static MFValue *invoke_values(id instance, SEL sel, NSArray<MFValue *> *argValue
 
 static MFValue *invoke(NSUInteger line, MFInterpreter *inter, MFScopeChain *scope, id instance, SEL sel, NSArray<MFExpression *> *argExprs){
     if (!instance) {
-        for (MFExpression *argExpr in argExprs) {
-            execute_expression(inter, scope, argExpr);
-            [inter.stack pop];
-        }
+//        for (MFExpression *argExpr in argExprs) {
+//            execute_expression(inter, scope, argExpr);
+//            [inter.stack pop];
+//        }
         return [MFValue valueInstanceWithInt:0];
     }
     
     NSMutableArray<MFValue *> *values = [NSMutableArray arrayWithCapacity:argExprs.count];
     for (MFExpression *expr in argExprs) {
-        execute_expression(inter, scope, expr);
-        MFValue *argValue = [inter.stack pop];
+        MFValue *argValue = execute_expression(inter, scope, expr);
         [values addObject:argValue];
     }
     return invoke_values(instance, sel, values);
@@ -210,16 +209,15 @@ break;\
 
 static MFValue *invoke_super(NSUInteger line, MFInterpreter *inter, MFScopeChain *scope, id instance,Class superClass, SEL sel, NSArray<MFExpression *> *argExprs){
     if (!instance) {
-        for (MFExpression *argExpr in argExprs) {
-            execute_expression(inter, scope, argExpr);
-            [inter.stack pop];
-        }
+//        for (MFExpression *argExpr in argExprs) {
+//            execute_expression(inter, scope, argExpr);
+//            [inter.stack pop];
+//        }
         return [MFValue valueInstanceWithInt:0];
     }
     NSMutableArray<MFValue *> *values = [NSMutableArray arrayWithCapacity:argExprs.count];
     for (MFExpression *expr in argExprs) {
-        execute_expression(inter, scope, expr);
-        MFValue *argValue = [inter.stack pop];
+        MFValue *argValue = execute_expression(inter, scope, expr);
         [values addObject:argValue];
     }
     return invoke_sueper_values(instance,superClass, sel, values);
@@ -386,46 +384,46 @@ break;\
 
 
 
-static void eval_bool_exprseeion(MFInterpreter *inter, MFExpression *expr){
+static MFValue * eval_bool_exprseeion(MFInterpreter *inter, MFExpression *expr){
 	MFValue *value = [MFValue new];
 	value.type = mf_create_type_specifier(MF_TYPE_BOOL);
 	value.uintValue = expr.boolValue;
-	[inter.stack push:value];
+	return value;
 }
 
-static void eval_u_interger_expression(MFInterpreter *inter, MFExpression *expr){
+static MFValue * eval_u_interger_expression(MFInterpreter *inter, MFExpression *expr){
     MFValue *value = [MFValue new];
     value.type = mf_create_type_specifier(MF_TYPE_U_INT);
     value.uintValue = expr.uintValue;
-    [inter.stack push:value];
+    return value;
 }
 
-static void eval_interger_expression(MFInterpreter *inter, MFExpression *expr){
+static MFValue * eval_interger_expression(MFInterpreter *inter, MFExpression *expr){
 	MFValue *value = [MFValue new];
 	value.type = mf_create_type_specifier(MF_TYPE_INT);
 	value.integerValue = expr.integerValue;
-	[inter.stack push:value];
+	return value;
 }
 
-static void eval_double_expression(MFInterpreter *inter, MFExpression *expr){
+static MFValue * eval_double_expression(MFInterpreter *inter, MFExpression *expr){
 	MFValue *value = [MFValue new];
 	value.type = mf_create_type_specifier(MF_TYPE_DOUBLE);
 	value.doubleValue = expr.doubleValue;
-	[inter.stack push:value];
+    return value;
 }
 
-static void eval_string_expression(MFInterpreter *inter, MFExpression *expr){
+static MFValue * eval_string_expression(MFInterpreter *inter, MFExpression *expr){
 	MFValue *value = [MFValue new];
 	value.type = mf_create_type_specifier(MF_TYPE_C_STRING);
 	value.cstringValue = expr.cstringValue;
-	[inter.stack push:value];
+	return value;
 }
 
-static void eval_sel_expression(MFInterpreter *inter, MFExpression *expr){
+static MFValue * eval_sel_expression(MFInterpreter *inter, MFExpression *expr){
 	MFValue *value = [MFValue new];
 	value.type = mf_create_type_specifier(MF_TYPE_SEL);
 	value.selValue = NSSelectorFromString(expr.selectorName);
-	[inter.stack push:value];
+	return value;
 }
 
 
@@ -680,7 +678,7 @@ static void copy_undef_var(id exprOrStatement, MFVarDeclareChain *chain, MFScope
 
 
 
-static void eval_block_expression(MFInterpreter *inter, MFScopeChain *outScope, MFBlockExpression *expr){
+static MFValue *eval_block_expression(MFInterpreter *inter, MFScopeChain *outScope, MFBlockExpression *expr){
 	MFValue *value = [MFValue new];
 	value.type = mf_create_type_specifier(MF_TYPE_BLOCK);
 	MFBlock *manBlock = [[MFBlock alloc] init];
@@ -702,27 +700,27 @@ static void eval_block_expression(MFInterpreter *inter, MFScopeChain *outScope, 
 	__autoreleasing id ocBlock = [manBlock ocBlock];
 	value.objectValue = ocBlock;
     CFRelease((__bridge void *)ocBlock);
-	[inter.stack push:value];
+    return value;
 }
 
 
-static void eval_nil_expr(MFInterpreter *inter){
+static MFValue * eval_nil_expr(MFInterpreter *inter){
 	MFValue *value = [MFValue new];
 	value.type = mf_create_type_specifier(MF_TYPE_OBJECT);
 	value.objectValue = nil;
-	[inter.stack push:value];
+	return value;
 }
 
 
-static void eval_null_expr(MFInterpreter *inter){
+static MFValue * eval_null_expr(MFInterpreter *inter){
 	MFValue *value = [MFValue new];
 	value.type = mf_create_type_specifier(MF_TYPE_POINTER);
 	value.pointerValue = NULL;
-	[inter.stack push:value];
+	return value;
 }
 
 
-static void eval_identifer_expression(MFInterpreter *inter, MFScopeChain *scope ,MFIdentifierExpression *expr){
+static MFValue *eval_identifer_expression(MFInterpreter *inter, MFScopeChain *scope ,MFIdentifierExpression *expr){
 	NSString *identifier = expr.identifier;
 	MFValue *value = [scope getValueWithIdentifierInChain:identifier];
 	if (!value) {
@@ -732,31 +730,30 @@ static void eval_identifer_expression(MFInterpreter *inter, MFScopeChain *scope 
 		}
 	}
 	NSCAssert(value, @"not found var %@", identifier);
-	[inter.stack push:value];
+	return value;
 }
 
 
-static void eval_ternary_expression(MFInterpreter *inter, MFScopeChain *scope, MFTernaryExpression *expr){
-	execute_expression(inter, scope, expr.condition);
-	MFValue *conValue = [inter.stack pop];
+static MFValue * execute_ternary_expression(MFInterpreter *inter, MFScopeChain *scope, MFTernaryExpression *expr){
+	MFValue *conValue = execute_expression(inter, scope, expr.condition);
 	if (conValue.isSubtantial) {
 		if (expr.trueExpr) {
-			execute_expression(inter, scope, expr.trueExpr);
+			return execute_expression(inter, scope, expr.trueExpr);
 		}else{
-			[inter.stack push:conValue];
+            return conValue;
 		}
 	}else{
-		execute_expression(inter, scope, expr.falseExpr);
+		return execute_expression(inter, scope, expr.falseExpr);
 	}
 	
 }
 
 
-static void execute_function_call_expression(MFInterpreter *inter, MFScopeChain *scope, MFFunctonCallExpression *expr);
-static MFValue *invoke_values(id instance, SEL sel, NSArray<MFValue *> *values);
+static MFValue * execute_function_call_expression(MFInterpreter *inter, MFScopeChain *scope, MFFunctonCallExpression *expr);
+static MFValue * invoke_values(id instance, SEL sel, NSArray<MFValue *> *values);
 
 
-static void eval_assign_expression(MFInterpreter *inter, MFScopeChain *scope, MFAssignExpression *expr){
+static MFValue *execute_assign_expression(MFInterpreter *inter, MFScopeChain *scope, MFAssignExpression *expr){
 	MFAssignKind assignKind = expr.assignKind;
 	MFExpression *leftExpr = expr.left;
 	MFExpression *rightExpr = expr.right;
@@ -799,15 +796,13 @@ static void eval_assign_expression(MFInterpreter *inter, MFScopeChain *scope, MF
 				
             }
             
-            execute_expression(inter, scope, optrExpr);
-            MFValue *operValue = [inter.stack pop];
+            MFValue *operValue = execute_expression(inter, scope, optrExpr);
             if (leftExpr.expressionKind == MF_IDENTIFIER_EXPRESSION) {
                 MFIdentifierExpression *identiferExpr = (MFIdentifierExpression *)leftExpr;
                 [scope assignWithIdentifer:identiferExpr.identifier value:operValue];
             }else{
                 MFMemberExpression *memberExpr = (MFMemberExpression *)leftExpr;
-                execute_expression(inter, scope, memberExpr.expr);
-                MFValue *memberObjValue = [inter.stack pop];
+                MFValue *memberObjValue = execute_expression(inter, scope, memberExpr.expr);
                 if (memberObjValue.type.typeKind == MF_TYPE_STRUCT) {
                     MFStructDeclareTable *table = [MFStructDeclareTable shareInstance];
                     set_struct_field_value(memberObjValue.pointerValue, [table getStructDeclareWithName:memberObjValue.type.structName],  memberExpr.memberName, operValue);
@@ -829,26 +824,20 @@ static void eval_assign_expression(MFInterpreter *inter, MFScopeChain *scope, MF
                     }
                 }
             }
-            [inter.stack push:operValue];
-			break;
+            return operValue;
 		}
 		case MF_SELF_EXPRESSION:{
 			NSCAssert(assignKind == MF_NORMAL_ASSIGN, @"");
-			execute_expression(inter, scope, rightExpr);
-			MFValue *rightValue = [inter.stack pop];
+			MFValue *rightValue = execute_expression(inter, scope, rightExpr);
 			[scope assignWithIdentifer:@"self" value:rightValue];
-            [inter.stack push:rightValue];
-			break;
+			return rightValue;
 		}
 			
 		case MF_SUB_SCRIPT_EXPRESSION:{
 			MFSubScriptExpression *subScriptExpr = (MFSubScriptExpression *)leftExpr;
-			execute_expression(inter, scope, rightExpr);
-			MFValue *rightValue = [inter.stack pop];
-			execute_expression(inter, scope, subScriptExpr.aboveExpr);
-			MFValue *aboveValue =  [inter.stack pop];
-			execute_expression(inter, scope, subScriptExpr.bottomExpr);
-			MFValue *bottomValue = [inter.stack pop];
+			MFValue *rightValue = execute_expression(inter, scope, rightExpr);
+			MFValue *aboveValue = execute_expression(inter, scope, subScriptExpr.aboveExpr);
+			MFValue *bottomValue = execute_expression(inter, scope, subScriptExpr.bottomExpr);
 			switch (bottomValue.type.typeKind) {
 				case MF_TYPE_BOOL:
 				case MF_TYPE_INT:
@@ -866,12 +855,11 @@ static void eval_assign_expression(MFInterpreter *inter, MFScopeChain *scope, MF
 					NSCAssert(0, @"");
 					break;
 			}
-            [inter.stack push:rightValue];
-			break;
+            return rightValue;
 		}
 		default:
 			NSCAssert(0, @"");
-			break;
+			return nil;
 	}
 
 }
@@ -940,11 +928,9 @@ NSCAssert(0, @"line:%zd, " #operationName  " operation not support type: %@",exp
 }
 
 
-static void execute_add_expression(MFInterpreter *inter, MFScopeChain *scope,MFBinaryExpression  *expr){
-	execute_expression(inter, scope, expr.left);
-	execute_expression(inter, scope, expr.right);
-	MFValue *leftValue = [inter.stack peekStack:1];
-	MFValue *rightValue = [inter.stack peekStack:0];
+static MFValue * execute_add_expression(MFInterpreter *inter, MFScopeChain *scope,MFBinaryExpression  *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
+	MFValue *rightValue = execute_expression(inter, scope, expr.right);
 	MFValue *resultValue = [MFValue new];
 	
 	if (![leftValue isMember] || ![rightValue isMember]){
@@ -952,43 +938,31 @@ static void execute_add_expression(MFInterpreter *inter, MFScopeChain *scope,MFB
 		NSString *str = [NSString stringWithFormat:@"%@%@",[leftValue nsStringValue].objectValue,[rightValue nsStringValue].objectValue];
 		resultValue.objectValue = str;
 	}else arithmeticalOperation(+,add);
-	[inter.stack pop];
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+    return resultValue;
 }
 
 
-static void execute_sub_expression(MFInterpreter *inter, MFScopeChain *scope,MFBinaryExpression  *expr){
-	execute_expression(inter, scope, expr.left);
-	execute_expression(inter, scope, expr.right);
-	MFValue *leftValue = [inter.stack peekStack:1];
-	MFValue *rightValue = [inter.stack peekStack:0];
+static MFValue * execute_sub_expression(MFInterpreter *inter, MFScopeChain *scope,MFBinaryExpression  *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
+	MFValue *rightValue = execute_expression(inter, scope, expr.right);
 	MFValue *resultValue = [MFValue new];
 	arithmeticalOperation(-,sub);
-	[inter.stack pop];
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+	return resultValue;
 }
 
 
-static void execute_mul_expression(MFInterpreter *inter, MFScopeChain *scope,MFBinaryExpression  *expr){
-	execute_expression(inter, scope, expr.left);
-	execute_expression(inter, scope, expr.right);
-	MFValue *leftValue = [inter.stack peekStack:1];
-	MFValue *rightValue = [inter.stack peekStack:0];
+static MFValue * execute_mul_expression(MFInterpreter *inter, MFScopeChain *scope,MFBinaryExpression  *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
+	MFValue *rightValue = execute_expression(inter, scope, expr.right);
 	MFValue *resultValue = [MFValue new];
 	arithmeticalOperation(*,mul);
-	[inter.stack pop];
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+	return resultValue;
 }
 
 
-static void execute_div_expression(MFInterpreter *inter, MFScopeChain *scope,MFBinaryExpression  *expr){
-	execute_expression(inter, scope, expr.left);
-	execute_expression(inter, scope, expr.right);
-	MFValue *leftValue = [inter.stack peekStack:1];
-	MFValue *rightValue = [inter.stack peekStack:0];
+static MFValue *execute_div_expression(MFInterpreter *inter, MFScopeChain *scope,MFBinaryExpression  *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
+	MFValue *rightValue = execute_expression(inter, scope, expr.right);
 	switch (rightValue.type.typeKind) {
 		case MF_TYPE_DOUBLE:
 			if (rightValue.doubleValue == 0) {
@@ -1012,21 +986,17 @@ static void execute_div_expression(MFInterpreter *inter, MFScopeChain *scope,MFB
 	}
 	MFValue *resultValue = [MFValue new];\
 	arithmeticalOperation(/,div);
-	[inter.stack pop];
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+	return resultValue;
 }
 
 
 
-static void execute_mod_expression(MFInterpreter *inter, MFScopeChain *scope,MFBinaryExpression  *expr){
-	execute_expression(inter, scope, expr.left);
-	MFValue *leftValue = [inter.stack peekStack:0];
+static MFValue *execute_mod_expression(MFInterpreter *inter, MFScopeChain *scope,MFBinaryExpression  *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
 	if (leftValue.type.typeKind != MF_TYPE_INT && leftValue.type.typeKind != MF_TYPE_U_INT) {
 		NSCAssert(0, @"line:%zd, mod operation not support type: %@",expr.left.lineNumber ,leftValue.type.typeName);
 	}
-	execute_expression(inter, scope, expr.right);
-	MFValue *rightValue = [inter.stack peekStack:0];
+	MFValue *rightValue = execute_expression(inter, scope, expr.right);
 	if (rightValue.type.typeKind != MF_TYPE_INT && rightValue.type.typeKind != MF_TYPE_U_INT) {
 		NSCAssert(0, @"line:%zd, mod operation not support type: %@",expr.right.lineNumber ,rightValue.type.typeName);
 	}
@@ -1062,9 +1032,7 @@ static void execute_mod_expression(MFInterpreter *inter, MFScopeChain *scope,MFB
 		resultValue.type = mf_create_type_specifier(MF_TYPE_U_INT);
 		resultValue.uintValue = leftValue.uintValue % rightValue.uintValue;
 	}
-	[inter.stack pop];
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+	return resultValue;
 }
 #define number_value_compare(sel,oper)\
 switch (value2.type.typeKind) {\
@@ -1175,32 +1143,24 @@ default:\
 	return NO;
 }
 
-static void execute_eq_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
-	execute_expression(inter, scope, expr.left);
-	execute_expression(inter, scope, expr.right);
-	MFValue *leftValue = [inter.stack peekStack:1];
-	MFValue *rightValue = [inter.stack peekStack:0];
+static MFValue * execute_eq_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
+	MFValue *rightValue = execute_expression(inter, scope, expr.right);
 	BOOL equal =  mf_equal_value(expr.left.lineNumber, leftValue, rightValue);
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_BOOL);
 	resultValue.uintValue = equal;
-	[inter.stack pop];
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+	return resultValue;
 }
 
-static void execute_ne_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
-	execute_expression(inter, scope, expr.left);
-	execute_expression(inter, scope, expr.right);
-	MFValue *leftValue = [inter.stack peekStack:1];
-	MFValue *rightValue = [inter.stack peekStack:0];
+static MFValue * execute_ne_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
+	MFValue *rightValue = execute_expression(inter, scope, expr.right);
 	BOOL equal =  mf_equal_value(expr.left.lineNumber, leftValue, rightValue);
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_BOOL);
 	resultValue.uintValue = !equal;
-	[inter.stack pop];
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+	return resultValue;
 }
 
 
@@ -1227,117 +1187,91 @@ compare_number_func(le, <=)
 compare_number_func(ge, >=)
 compare_number_func(gt, >)
 
-static void execute_lt_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
-	execute_expression(inter, scope, expr.left);
-	execute_expression(inter, scope, expr.right);
-	MFValue *leftValue = [inter.stack peekStack:1];
-	MFValue *rightValue = [inter.stack peekStack:0];
+static MFValue * execute_lt_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
+	MFValue *rightValue = execute_expression(inter, scope, expr.right);
 	BOOL lt = lt_value(expr.left.lineNumber, leftValue, rightValue);
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_BOOL);
 	resultValue.uintValue = lt;
-	[inter.stack pop];
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+    return resultValue;
 }
 
 
-static void execute_le_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
-	execute_expression(inter, scope, expr.left);
-	execute_expression(inter, scope, expr.right);
-	MFValue *leftValue = [inter.stack peekStack:1];
-	MFValue *rightValue = [inter.stack peekStack:0];
+static MFValue * execute_le_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
+	MFValue *rightValue = execute_expression(inter, scope, expr.right);
 	BOOL le = le_value(expr.left.lineNumber, leftValue, rightValue);
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_BOOL);
 	resultValue.uintValue = le;
-	[inter.stack pop];
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+    return resultValue;
 }
 
-static void execute_ge_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
-	execute_expression(inter, scope, expr.left);
-	execute_expression(inter, scope, expr.right);
-	MFValue *leftValue = [inter.stack peekStack:1];
-	MFValue *rightValue = [inter.stack peekStack:0];
+static MFValue * execute_ge_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
+	MFValue *rightValue = execute_expression(inter, scope, expr.right);
 	BOOL ge = ge_value(expr.left.lineNumber, leftValue, rightValue);
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_BOOL);
 	resultValue.uintValue = ge;
-	[inter.stack pop];
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+	return resultValue;
 }
 
 
-static void execute_gt_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
-	execute_expression(inter, scope, expr.left);
-	execute_expression(inter, scope, expr.right);
-	MFValue *leftValue = [inter.stack peekStack:1];
-	MFValue *rightValue = [inter.stack peekStack:0];
+static MFValue * execute_gt_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
+	MFValue *rightValue = execute_expression(inter, scope, expr.right);
 	BOOL gt = gt_value(expr.left.lineNumber, leftValue, rightValue);
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_BOOL);
 	resultValue.uintValue = gt;
-	[inter.stack pop];
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+    return resultValue;
 }
 
-static void execute_logic_and_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
-	execute_expression(inter, scope, expr.left);
-	MFValue *leftValue = [inter.stack peekStack:0];
+static MFValue *execute_logic_and_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_BOOL);
 	if (!leftValue.isSubtantial) {
 		resultValue.uintValue = NO;
-		[inter.stack pop];
 	}else{
-		execute_expression(inter, scope, expr.right);
-		MFValue *rightValue = [inter.stack peekStack:0];
+		MFValue *rightValue = execute_expression(inter, scope, expr.right);
 		if (!rightValue.isSubtantial) {
 			resultValue.uintValue = NO;
 		}else{
 			resultValue.uintValue = YES;
 		}
-		[inter.stack pop];
 	}
-	[inter.stack push:resultValue];
+	return resultValue;
 }
 
-static void execute_logic_or_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
-	execute_expression(inter, scope, expr.left);
-	MFValue *leftValue = [inter.stack peekStack:0];
+static MFValue * execute_logic_or_expression(MFInterpreter *inter, MFScopeChain *scope, MFBinaryExpression *expr){
+	MFValue *leftValue = execute_expression(inter, scope, expr.left);
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_BOOL);
 	if (leftValue.isSubtantial) {
 		resultValue.uintValue = YES;
-		[inter.stack pop];
 	}else{
-		execute_expression(inter, scope, expr.right);
-		MFValue *rightValue = [inter.stack peekStack:0];
+		MFValue *rightValue = execute_expression(inter, scope, expr.right);
 		if (rightValue.isSubtantial) {
 			resultValue.uintValue = YES;
 		}else{
 			resultValue.uintValue = NO;
 		}
-		[inter.stack pop];
 	}
-	[inter.stack push:resultValue];
+    return resultValue;
 }
 
-static void execute_logic_not_expression(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
-	execute_expression(inter, scope, expr.expr);
-	MFValue *value = [inter.stack peekStack:0];
+static MFValue * execute_logic_not_expression(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
+	MFValue *value = execute_expression(inter, scope, expr.expr);
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_BOOL);
 	resultValue.uintValue = !value.isSubtantial;
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+	return resultValue;
 }
 
-static void execute_increment_expression(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
+static MFValue * execute_increment_expression(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
 	MFExpression *oneValueExpr = mf_create_expression(MF_INT_EXPRESSION);
 	oneValueExpr.integerValue = 1;
 	MFBinaryExpression *addExpr = [[MFBinaryExpression alloc] initWithExpressionKind:MF_ADD_EXPRESSION];
@@ -1347,10 +1281,10 @@ static void execute_increment_expression(MFInterpreter *inter, MFScopeChain *sco
 	assignExpression.assignKind = MF_NORMAL_ASSIGN;
 	assignExpression.left = expr.expr;
 	assignExpression.right = addExpr;
-	execute_expression(inter, scope, assignExpression);
+	return execute_expression(inter, scope, assignExpression);
 }
 
-static void execute_decrement_expression(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
+static MFValue * execute_decrement_expression(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
 	
 	MFExpression *oneValueExpr = mf_create_expression(MF_INT_EXPRESSION);
 	oneValueExpr.integerValue = 1;
@@ -1361,13 +1295,12 @@ static void execute_decrement_expression(MFInterpreter *inter, MFScopeChain *sco
 	assignExpression.assignKind = MF_NORMAL_ASSIGN;
 	assignExpression.left = expr.expr;
 	assignExpression.right = addExpr;
-	execute_expression(inter, scope, assignExpression);
+	return execute_expression(inter, scope, assignExpression);
 	
 	
 }
-static void execute_negative_expression(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
-	execute_expression(inter, scope, expr.expr);
-	MFValue *value = [inter.stack pop];
+static MFValue * execute_negative_expression(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
+	MFValue *value = execute_expression(inter, scope, expr.expr);
 	MFValue *resultValue = [MFValue new];
 	switch (value.type.typeKind) {
 		case MF_TYPE_INT:
@@ -1388,18 +1321,16 @@ static void execute_negative_expression(MFInterpreter *inter, MFScopeChain *scop
 			NSCAssert(0, @"line:%zd operator ‘-’ can not use type: %@",expr.expr.lineNumber, value.type.typeName);
 			break;
 	}
-    [inter.stack push:resultValue];
+    return resultValue;
     
 }
 
 
-static void execute_sub_script_expression(MFInterpreter *inter, MFScopeChain *scope,MFSubScriptExpression *expr){
-	execute_expression(inter, scope, expr.bottomExpr);
-	MFValue *bottomValue = [inter.stack peekStack:0];
+static MFValue * execute_sub_script_expression(MFInterpreter *inter, MFScopeChain *scope,MFSubScriptExpression *expr){
+	MFValue *bottomValue = execute_expression(inter, scope, expr.bottomExpr);
 	MFTypeSpecifierKind kind = bottomValue.type.typeKind;
 	
-	execute_expression(inter, scope, expr.aboveExpr);
-	MFValue *arrValue = [inter.stack peekStack:0];
+	MFValue *arrValue = execute_expression(inter, scope, expr.aboveExpr);
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_OBJECT);
 	switch (kind) {
@@ -1419,14 +1350,11 @@ static void execute_sub_script_expression(MFInterpreter *inter, MFScopeChain *sc
 			NSCAssert(0, @"line:%zd, index operator can not use type: %@",expr.bottomExpr.lineNumber, bottomValue.type.typeName);
 			break;
 	}
-	[inter.stack pop];
-	[inter.stack pop];
-	[inter.stack push:resultValue];
+    return resultValue;
 }
 
-static void execute_at_expression(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
-	execute_expression(inter, scope, expr.expr);
-	MFValue *value = [inter.stack pop];
+static MFValue * execute_at_expression(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
+	MFValue *value = execute_expression(inter, scope, expr.expr);
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_OBJECT);
 	switch (value.type.typeKind) {
@@ -1448,27 +1376,25 @@ static void execute_at_expression(MFInterpreter *inter, MFScopeChain *scope,MFUn
 			NSCAssert(0, @"line:%zd operator ‘@’ can not use type: %@",expr.expr.lineNumber, value.type.typeName);
 			break;
 	}
-	[inter.stack push:resultValue];
+    return resultValue;
 }
 
-static void execute_get_address_expresion(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
-    execute_expression(inter, scope, expr.expr);
-    MFValue *value = [inter.stack pop];
+static MFValue * execute_get_address_expresion(MFInterpreter *inter, MFScopeChain *scope,MFUnaryExpression *expr){
+    MFValue *value = execute_expression(inter, scope, expr.expr);
     MFValue *resultValue = [MFValue new];
     resultValue.type = mf_create_type_specifier(MF_TYPE_POINTER);
     resultValue.pointerValue = [value valuePointer];
-    [inter.stack push:resultValue];
+    return resultValue;
 }
 
 
-static void eval_struct_expression(MFInterpreter *inter, MFScopeChain *scope, MFStructpression *expr){
+static MFValue * eval_struct_expression(MFInterpreter *inter, MFScopeChain *scope, MFStructpression *expr){
 	NSMutableDictionary *structDic = [NSMutableDictionary dictionary];
 	NSArray *entriesExpr =  expr.entriesExpr;
 	for (MFStructEntry *entryExpr in entriesExpr) {
 		NSString *key = entryExpr.key;
 		MFExpression *itemExpr =  entryExpr.valueExpr;
-		execute_expression(inter, scope, itemExpr);
-		MFValue *value = [inter.stack peekStack:0];
+		MFValue *value = execute_expression(inter, scope, itemExpr);
 		if (value.isObject) {
 			NSCAssert(0, @"line:%zd, struct can not support object type %@", itemExpr.lineNumber, value.type.typeName );
 		}
@@ -1503,83 +1429,71 @@ static void eval_struct_expression(MFInterpreter *inter, MFScopeChain *scope, MF
 				NSCAssert(0, @"");
 				break;
 		}
-		
-		[inter.stack pop];
 	}
 
 	MFValue *result = [[MFValue alloc] init];
 	result.type = mf_create_type_specifier(MF_TYPE_STRUCT_LITERAL);
 	result.objectValue = [structDic copy];
-	[inter.stack push:result];
+    return result;
 }
 
 
 
 
-static void execute_dic_expression(MFInterpreter *inter, MFScopeChain *scope, MFDictionaryExpression *expr){
+static MFValue * execute_dic_expression(MFInterpreter *inter, MFScopeChain *scope, MFDictionaryExpression *expr){
 	NSMutableDictionary *dic = [NSMutableDictionary dictionary];
 	for (MFDicEntry *entry in expr.entriesExpr) {
-		execute_expression(inter, scope, entry.keyExpr);
-		MFValue *keyValue = [inter.stack peekStack:0];
+		MFValue *keyValue = execute_expression(inter, scope, entry.keyExpr);
 		if (!keyValue.isObject) {
 			NSCAssert(0, @"line:%zd key can not bee type:%@",entry.keyExpr.lineNumber, keyValue.type.typeName);
 		}
 		
-		execute_expression(inter, scope, entry.valueExpr);
-		MFValue *valueValue = [inter.stack peekStack:0];
+		MFValue *valueValue = execute_expression(inter, scope, entry.valueExpr);
 		if (!valueValue.isObject) {
 			NSCAssert(0, @"line:%zd value can not bee type:%@",entry.keyExpr.lineNumber, valueValue.type.typeName);
 		}
 
 		dic[keyValue.c2objectValue] = valueValue.c2objectValue;
-		
-		[inter.stack pop];
-		[inter.stack pop];
 	}
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_OBJECT);
 	resultValue.objectValue = dic.copy;
-	[inter.stack push:resultValue];
+	return resultValue;
 }
 
 
-static void execute_array_expression(MFInterpreter *inter, MFScopeChain *scope, MFArrayExpression *expr){
+static MFValue * execute_array_expression(MFInterpreter *inter, MFScopeChain *scope, MFArrayExpression *expr){
 	NSMutableArray *array = [NSMutableArray array];
 	for (MFExpression *elementExpr in expr.itemExpressions) {
-		execute_expression(inter, scope, elementExpr);
-		MFValue *elementValue = [inter.stack peekStack:0];
+		MFValue *elementValue = execute_expression(inter, scope, elementExpr);
 		if (elementValue.isObject) {
 			[array addObject:elementValue.c2objectValue];
 		}else{
 			NSCAssert(0, @"line:%zd array element type  can not bee type:%@",elementExpr.lineNumber, elementValue.type.typeName);
 		}
-		
-		[inter.stack pop];
 	}
 	MFValue *resultValue = [MFValue new];
 	resultValue.type = mf_create_type_specifier(MF_TYPE_OBJECT);
 	resultValue.objectValue = array.copy;
-	[inter.stack push:resultValue];
+	return resultValue;
 }
 
 
-static void execute_self_super_expression(MFInterpreter *inter, MFScopeChain *scope){
+static MFValue * execute_self_super_expression(MFInterpreter *inter, MFScopeChain *scope){
 	MFValue *value = [scope getValueWithIdentifierInChain:@"self"];
 	NSCAssert(value, @"not found var %@", @"self");
-	[inter.stack push:value];
+	return value;
 }
 
 
-static void execute_member_expression(MFInterpreter *inter, MFScopeChain *scope, MFMemberExpression *expr){
+static MFValue * execute_member_expression(MFInterpreter *inter, MFScopeChain *scope, MFMemberExpression *expr){
     if (expr.expr.expressionKind == MF_SUPER_EXPRESSION) {
         MFFunctonCallExpression *funcExpr = [[MFFunctonCallExpression alloc] init];
         funcExpr.expr = expr;
-        execute_function_call_expression(inter, scope, funcExpr);
-        return;
+        return execute_function_call_expression(inter, scope, funcExpr);;
     }
     
-	execute_expression(inter, scope, expr.expr);
-	MFValue *obj = [inter.stack pop];
+	MFValue *obj = execute_expression(inter, scope, expr.expr);
     MFValue *resultValue;
 	if (obj.type.typeKind == MF_TYPE_STRUCT) {
 		MFStructDeclareTable *table = [MFStructDeclareTable shareInstance];
@@ -1591,12 +1505,12 @@ static void execute_member_expression(MFInterpreter *inter, MFScopeChain *scope,
         SEL sel = NSSelectorFromString(expr.memberName);
         resultValue  = invoke_values(obj.c2objectValue, sel, nil);
     }
-	[inter.stack push:resultValue];
+    return resultValue;
 }
 
 static MFValue * call_c_function(NSUInteger lineNumber, MFValue *callee, NSArray<MFValue *> *argValues);
 
-static void execute_function_call_expression(MFInterpreter *inter, MFScopeChain *scope, MFFunctonCallExpression *expr){
+static MFValue * execute_function_call_expression(MFInterpreter *inter, MFScopeChain *scope, MFFunctonCallExpression *expr){
 	MFExpressionKind exprKind = expr.expr.expressionKind;
 	switch (exprKind) {
 		case MF_MEMBER_EXPRESSION:{
@@ -1607,23 +1521,19 @@ static void execute_function_call_expression(MFInterpreter *inter, MFScopeChain 
 				case MF_SELF_EXPRESSION:{
 					id _self = [[scope getValueWithIdentifierInChain:@"self"] objectValue];
 					MFValue *retValue = invoke(expr.lineNumber, inter, scope,_self, sel, expr.args);
-					[inter.stack push:retValue];
-					break;
+					return retValue;
 				}
 				case MF_SUPER_EXPRESSION:{
 					id _self = [[scope getValueWithIdentifierInChain:@"self"] objectValue];
                     Class currentClass = objc_getClass(memberObjExpr.currentClassName.UTF8String);
 					Class superClass = class_getSuperclass(currentClass);
                     MFValue *retValue = invoke_super(memberObjExpr.lineNumber, inter, scope, _self, superClass, sel, expr.args);
-                    [inter.stack push:retValue];
-					break;
+                    return retValue;
 				}
 				default:{
-					execute_expression(inter, scope, memberObjExpr);
-					MFValue *memberObj = [inter.stack pop];
+					MFValue *memberObj = execute_expression(inter, scope, memberObjExpr);
 					MFValue *retValue = invoke(expr.lineNumber, inter, scope, [memberObj c2objectValue], sel, expr.args);
-					[inter.stack push:retValue];
-					break;
+                    return retValue;
 				}
 			}
 			
@@ -1632,9 +1542,7 @@ static void execute_function_call_expression(MFInterpreter *inter, MFScopeChain 
 		}
 		case MF_IDENTIFIER_EXPRESSION:
 		case MF_FUNCTION_CALL_EXPRESSION:{
-			execute_expression(inter, scope, expr.expr);
-			MFValue *callee = [inter.stack pop];
-            
+			MFValue *callee = execute_expression(inter, scope, expr.expr);
             static Class blockClass = nil;
             static dispatch_once_t onceToken;
             dispatch_once(&onceToken, ^{
@@ -1650,29 +1558,28 @@ static void execute_function_call_expression(MFInterpreter *inter, MFScopeChain 
             
             if (callee.type.typeKind != MF_TYPE_C_FUNCTION && !(callee.isObject && [callee.objectValue isKindOfClass:blockClass])) {
                 mf_throw_error(expr.expr.lineNumber, MFRuntimeErrorCallCanNotBeCalleeValue, @"type: %@ value can not be callee",callee.type.typeName);
-                return;
+                return nil;
             }
             
             if (callee.type.typeKind == MF_TYPE_C_FUNCTION) {
                 if (callee.pointerValue == NULL) {
                     mf_throw_error(expr.expr.lineNumber, MFRuntimeErrorNullPointer, nil);
-                    return;
+                    return nil;
                 }
                 
                 NSUInteger paramListCount =  callee.type.paramListTypeEncode.count;
                 if (paramListCount != expr.args.count) {
                     mf_throw_error(expr.lineNumber, MFRuntimeErrorParameterListCountNoMatch, @"expect count: %zd, pass in cout:%zd",paramListCount, expr.args.count);
-                    return;
+                    return nil;
                 }
                 
                 NSMutableArray *paramValues = [NSMutableArray arrayWithCapacity:paramListCount];
                 for (MFExpression *argExpr in expr.args) {
-                    execute_expression(inter, scope, argExpr);
-                    MFValue *value = [inter.stack pop];
+                    MFValue *value = execute_expression(inter, scope, argExpr);
                     [paramValues addObject:value];
                 }
                 MFValue *retValue = call_c_function(expr.lineNumber,callee, paramValues.copy);
-                [inter.stack push:retValue];
+                return retValue;
             }else{
                 const char *blockTypeEncoding = [MFBlock typeEncodingForBlock:callee.c2objectValue];
                 NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:blockTypeEncoding];
@@ -1682,13 +1589,12 @@ static void execute_function_call_expression(MFInterpreter *inter, MFScopeChain 
                 NSUInteger numberOfArguments = [sig numberOfArguments];
                 if (numberOfArguments - 1 != expr.args.count) {
                     mf_throw_error(expr.lineNumber, MFRuntimeErrorParameterListCountNoMatch, @"expect count: %zd, pass in cout:%zd",numberOfArguments - 1,expr.args.count);
-                    return;
+                    return nil;
                 }
                 for (NSUInteger i = 1; i < numberOfArguments; i++) {
                     const char *typeEncoding = [sig getArgumentTypeAtIndex:i];
                     void *ptr = alloca(mf_size_with_encoding(typeEncoding));
-                    execute_expression(inter, scope, expr.args[i -1]);
-                    __autoreleasing MFValue *argValue = [inter.stack pop];
+                    __autoreleasing MFValue *argValue = execute_expression(inter, scope, expr.args[i -1]);
                     [argValue assignToCValuePointer:ptr typeEncoding:typeEncoding];
                     [invocation setArgument:ptr atIndex:i];
                 }
@@ -1703,14 +1609,14 @@ static void execute_function_call_expression(MFInterpreter *inter, MFScopeChain 
                 }else{
                     retValue = [MFValue voidValueInstance];
                 }
-                [inter.stack push:retValue];
+                return retValue;
             }
 			break;
 		}
 			
 		default:
             mf_throw_error(expr.lineNumber, MFRuntimeErrorCallCanNotBeCalleeValue, @"expression can not be callee");
-			break;
+			return nil;
 	}
 	
 }
@@ -1754,13 +1660,12 @@ static MFValue * call_c_function(NSUInteger lineNumber, MFValue *callee, NSArray
 }
 
 
-static void execute_cfunction_expression(MFInterpreter *inter, MFScopeChain *scope, MFCFuntionExpression *expr){
+static MFValue * execute_cfunction_expression(MFInterpreter *inter, MFScopeChain *scope, MFCFuntionExpression *expr){
     MFExpression *cfunNameOrPointerExpr = expr.cfunNameOrPointerExpr;
-    execute_expression(inter, scope, cfunNameOrPointerExpr);
-    MFValue *cfunNameOrPointer = [inter.stack pop];
+    MFValue *cfunNameOrPointer = execute_expression(inter, scope, cfunNameOrPointerExpr);
     if (cfunNameOrPointer.type.typeKind != MF_TYPE_C_STRING && cfunNameOrPointer.type.typeKind != MF_TYPE_POINTER) {
         mf_throw_error(cfunNameOrPointerExpr.lineNumber, MFRuntimeErrorIllegalParameterType, @" CFuntion must accept a CString type or Pointer type, not %@!",cfunNameOrPointer.type.typeName);
-        return;
+        return nil;
     }
     
     MFValue *value = [[MFValue alloc] init];
@@ -1771,145 +1676,107 @@ static void execute_cfunction_expression(MFInterpreter *inter, MFScopeChain *sco
         void *pointerValue = symdl(cfunNameOrPointer.cstringValue);
         if (!pointerValue) {
             mf_throw_error(cfunNameOrPointerExpr.lineNumber, MFRuntimeErrorNotFoundCFunction, @"not found CFunction: %s",cfunNameOrPointer.cstringValue);
-            return;
+            return nil;
         }
         value.pointerValue = pointerValue;
     }else{
         value.pointerValue = cfunNameOrPointer.pointerValue;
     }
-    [inter.stack push:value];
+    return value;
 }
 
 
 
-static void execute_expression(MFInterpreter *inter, MFScopeChain *scope, __kindof MFExpression *expr){
+static MFValue * execute_expression(MFInterpreter *inter, MFScopeChain *scope, __kindof MFExpression *expr){
 	switch (expr.expressionKind) {
 		case MF_BOOLEAN_EXPRESSION:
-			eval_bool_exprseeion(inter, expr);
-			break;
+			return eval_bool_exprseeion(inter, expr);
         case MF_U_INT_EXPRESSION:
-            eval_u_interger_expression(inter, expr);
-            break;
+            return eval_u_interger_expression(inter, expr);
 		case MF_INT_EXPRESSION:
-			eval_interger_expression(inter, expr);
-			break;
+			return eval_interger_expression(inter, expr);
 		case MF_DOUBLE_EXPRESSION:
-			eval_double_expression(inter, expr);
-			break;
+			return eval_double_expression(inter, expr);
 		case MF_STRING_EXPRESSION:
-			eval_string_expression(inter, expr);
-			break;
+		 	return eval_string_expression(inter, expr);
 		case MF_SELECTOR_EXPRESSION:
-			eval_sel_expression(inter, expr);
-			break;
+			return eval_sel_expression(inter, expr);
 		case MF_BLOCK_EXPRESSION:
-			eval_block_expression(inter, scope, expr);
-			break;
+			return eval_block_expression(inter, scope, expr);
 		case MF_NIL_EXPRESSION:
-			eval_nil_expr(inter);
-			break;
+			return eval_nil_expr(inter);
 		case MF_NULL_EXPRESSION:
-			eval_null_expr(inter);
-			break;
+			return eval_null_expr(inter);
 		case MF_SELF_EXPRESSION:
 		case MF_SUPER_EXPRESSION:
-			execute_self_super_expression(inter, scope);
-			break;
+			return execute_self_super_expression(inter, scope);
+			
 		case MF_IDENTIFIER_EXPRESSION:
-			eval_identifer_expression(inter, scope, expr);
-			break;
+			return eval_identifer_expression(inter, scope, expr);
+
 		case MF_ASSIGN_EXPRESSION:
-			eval_assign_expression(inter, scope, expr);
-			break;
+			return execute_assign_expression(inter, scope, expr);
 		case MF_ADD_EXPRESSION:
-			execute_add_expression(inter, scope, expr);
-			break;
+			return execute_add_expression(inter, scope, expr);
 		case MF_SUB_EXPRESSION:
-			execute_sub_expression(inter, scope, expr);
-			break;
+			return execute_sub_expression(inter, scope, expr);
 		case MF_MUL_EXPRESSION:
-			execute_mul_expression(inter, scope, expr);
-			break;
+			return execute_mul_expression(inter, scope, expr);
 		case MF_DIV_EXPRESSION:
-			execute_div_expression(inter, scope, expr);
-			break;
+		 	return execute_div_expression(inter, scope, expr);
 		case MF_MOD_EXPRESSION:
-			execute_mod_expression(inter, scope, expr);
-			break;
+			return execute_mod_expression(inter, scope, expr);
 		case MF_EQ_EXPRESSION:
-			execute_eq_expression(inter, scope, expr);
-			break;
+			return execute_eq_expression(inter, scope, expr);
 		case MF_NE_EXPRESSION:
-			execute_ne_expression(inter, scope, expr);
-			break;
+			return execute_ne_expression(inter, scope, expr);
 		case MF_LT_EXPRESSION:
-			execute_lt_expression(inter, scope, expr);
-			break;
+			return execute_lt_expression(inter, scope, expr);
 		case MF_LE_EXPRESSION:
-			execute_le_expression(inter, scope, expr);
-			break;
+			return execute_le_expression(inter, scope, expr);
 		case MF_GE_EXPRESSION:
-			execute_ge_expression(inter, scope, expr);
-			break;
+			return execute_ge_expression(inter, scope, expr);
 		case MF_GT_EXPRESSION:
-			execute_gt_expression(inter, scope, expr);
-			break;
+			return execute_gt_expression(inter, scope, expr);
 		case MF_LOGICAL_AND_EXPRESSION:
-			execute_logic_and_expression(inter, scope, expr);
-			break;
+			return execute_logic_and_expression(inter, scope, expr);
 		case MF_LOGICAL_OR_EXPRESSION:
-			execute_logic_or_expression(inter, scope, expr);
-			break;
+			return execute_logic_or_expression(inter, scope, expr);
 		case MF_LOGICAL_NOT_EXPRESSION:
-			execute_logic_not_expression(inter, scope, expr);
-			break;
+			return execute_logic_not_expression(inter, scope, expr);
 		case MF_TERNARY_EXPRESSION:
-			eval_ternary_expression(inter, scope, expr);
-			break;
+		 	return execute_ternary_expression(inter, scope, expr);
 		case MF_SUB_SCRIPT_EXPRESSION:
-			execute_sub_script_expression(inter, scope, expr);
-			break;
+			return execute_sub_script_expression(inter, scope, expr);
 		case MF_AT_EXPRESSION:
-			execute_at_expression(inter, scope, expr);
-			break;
+			return execute_at_expression(inter, scope, expr);
         case MF_GET_ADDRESS_EXPRESSION:
-            execute_get_address_expresion(inter, scope, expr);
-            break;
+            return execute_get_address_expresion(inter, scope, expr);
 		case NSC_NEGATIVE_EXPRESSION:
-			execute_negative_expression(inter, scope, expr);
-			break;
+			return execute_negative_expression(inter, scope, expr);
 		case MF_MEMBER_EXPRESSION:
-			execute_member_expression(inter, scope, expr);
-			break;
+			return execute_member_expression(inter, scope, expr);
 		case MF_DIC_LITERAL_EXPRESSION:
-			execute_dic_expression(inter, scope, expr);
-			break;
+			return execute_dic_expression(inter, scope, expr);
 		case MF_ARRAY_LITERAL_EXPRESSION:
-			execute_array_expression(inter, scope, expr);
-			break;
+			return execute_array_expression(inter, scope, expr);
 		case MF_INCREMENT_EXPRESSION:
-			execute_increment_expression(inter, scope, expr);
-			break;
+			return execute_increment_expression(inter, scope, expr);
 		case MF_DECREMENT_EXPRESSION:
-			execute_decrement_expression(inter, scope, expr);
-			break;
+			return execute_decrement_expression(inter, scope, expr);
 		case MF_STRUCT_LITERAL_EXPRESSION:
-			eval_struct_expression(inter, scope, expr);
-			break;
+			return eval_struct_expression(inter, scope, expr);
 		case MF_FUNCTION_CALL_EXPRESSION:
-			execute_function_call_expression(inter, scope, expr);
-			break;
+			return execute_function_call_expression(inter, scope, expr);
         case MF_C_FUNCTION_EXPRESSION:
-            execute_cfunction_expression(inter, scope, expr);
-            break;
+            return execute_cfunction_expression(inter, scope, expr);
 		default:
-			break;
+            return nil;
 	}
 	
 }
 
 MFValue *mf_execute_expression(MFInterpreter *inter, MFScopeChain *scope,MFExpression *expr){
-	execute_expression(inter, scope, expr);
-	return [inter.stack pop];
+	return execute_expression(inter, scope, expr);
 }
 
